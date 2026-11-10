@@ -1,6 +1,6 @@
 # ai-skill
 
-Three Claude Code skills that take a task from request to verified result:
+Claude Code skills that take a task from request to verified result: `ai-main` routes it, `ai-orchestrate` runs a job graph across subagents and worktree sub-sessions with an independent arbiter, `ai-auto` locks scope once and runs end to end.
 
 | Skill | Role |
 | --- | --- |
