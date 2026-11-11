@@ -15,13 +15,13 @@ Aliases for Claude Code units (`Agent`, Workflow `agent()`, `claude --bg --model
 
 ## Job to tier and starting effort
 
-| Job | Tier | Effort |
-| --- | --- | --- |
-| R0 (scout, log reading, diff summary), or a purely mechanical R1 (rename, pattern edit) | `t1` | `low` |
-| R1 implement or fix with a clear scope and a known cause and approach | `t2` | `medium` |
-| R2 implement (money, auth, data integrity, concurrency, a shared API or schema), or a debug whose cause is unknown | `t3` | `medium` |
-| Large migration, architecture redesign, deep research | `t4` | `high` |
-| Review, arbiter, advisor | One tier above the run's strongest writer, at least `t3`, capped at the ceiling | `high` |
+| Job                                                                                                                | Tier                                                                            | Effort   |
+| ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------- | -------- |
+| R0 (scout, log reading, diff summary), or a purely mechanical R1 (rename, pattern edit)                            | `t1`                                                                            | `low`    |
+| R1 implement or fix with a clear scope and a known cause and approach                                              | `t2`                                                                            | `medium` |
+| R2 implement (money, auth, data integrity, concurrency, a shared API or schema), or a debug whose cause is unknown | `t3`                                                                            | `medium` |
+| Large migration, architecture redesign, deep research                                                              | `t4`                                                                            | `medium` |
+| Review, arbiter, advisor                                                                                           | One tier above the run's strongest writer, at least `t3`, capped at the ceiling | `high`   |
 
 R3 marks an approval gate, not a tier: an R3 job takes the row its work fits.
 
