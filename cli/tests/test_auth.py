@@ -126,11 +126,12 @@ class CliTests(Sandbox):
         self.assertIsNone(cred.load_metadata(self.env))
 
     def test_auth_success(self):
-        self.answers = ["1", "yes"]
+        self.answers = ["1"]
         code, out = self.ai("auth")
         self.assertEqual(code, 0, out)
         meta = cred.load_metadata(self.env)
-        self.assertTrue(cred.is_active(meta) and cred.consent_valid(meta))
+        self.assertTrue(cred.is_active(meta))
+        self.assertNotIn("consent", meta)
         self.assertEqual((meta["provider"], meta["endpoint_host"]), ("typesafe", "api.typesafe.ai"))
         self.assertEqual(self.validated, [("https://api.typesafe.ai/v1", "jev-1.13.0", True)])
         self.assertEqual(cred.decode_secret(self.store.data[meta["credential_ref"]], meta), SENTINEL_KEY)
@@ -139,16 +140,23 @@ class CliTests(Sandbox):
         self.assertIn("jevgrep: ready", out)
         self.assert_no_leak(out)
 
-    def test_consent_declined_changes_nothing(self):
-        self.answers = ["1", "no"]
+    def test_auth_asks_only_provider_and_key(self):
+        self.answers = ["1"]
         code, out = self.ai("auth")
-        self.assertEqual(code, 1)
-        self.assertIn("consent not given", out)
-        self.assertEqual((cred.load_metadata(self.env), self.store.data, self.validated), (None, {}, []))
-        self.assertEqual(self.user_env.writes, [])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.answers, [])
+        self.assertNotIn("Before Jev is turned on", out)
+
+    def test_old_consent_field_is_dropped(self):
+        old = active_metadata()
+        old["consent"] = {"provider": "typesafe", "policy_version": 1}
+        cred.save_metadata(old, self.env)
+        self.answers = ["1", "1"]
+        self.assertEqual(self.ai("auth")[0], 0)
+        self.assertNotIn("consent", cred.load_metadata(self.env))
 
     def test_validation_failure_changes_nothing(self):
-        self.answers = ["1", "yes"]
+        self.answers = ["1"]
         code, out = self.ai("auth", validate=lambda *a, **k: ValidationResult(False, "auth_error", 401))
         self.assertEqual(code, 1)
         self.assertIn("auth_error, HTTP 401", out)
@@ -164,7 +172,7 @@ class CliTests(Sandbox):
 
     def test_custom_loopback_endpoint_end_to_end(self):
         with ProviderServer(body=good_answer()) as server:
-            self.answers = ["5", server.url, "jev-x", "y", "yes"]
+            self.answers = ["5", server.url, "jev-x", "y"]
             code, out = self.ai("auth", validate=provider.validate_credentials)
         self.assertEqual(code, 0, out)
         meta = cred.load_metadata(self.env)
@@ -174,7 +182,7 @@ class CliTests(Sandbox):
 
     def test_custom_gateway_requiring_criteria_is_not_enabled(self):
         with ProviderServer(body=good_answer(), require_criteria=True) as server:
-            self.answers = ["5", server.url, "jev-x", "y", "yes"]
+            self.answers = ["5", server.url, "jev-x", "y"]
             code, out = self.ai("auth", validate=provider.validate_credentials)
         self.assertEqual(code, 1, out)
         self.assertIn("validation failed (provider_error, HTTP 422)", out)
@@ -188,7 +196,7 @@ class CliTests(Sandbox):
         def interrupt(*_args, **_kwargs):
             raise KeyboardInterrupt
 
-        self.answers = ["1", "yes"]
+        self.answers = ["1"]
         code, out = self.ai("auth", validate=interrupt)
         self.assertEqual(code, 130)
         self.assertIn("Nothing was changed.", out)
@@ -199,7 +207,7 @@ class CliTests(Sandbox):
         def interrupt(_real):
             raise KeyboardInterrupt
 
-        self.answers = ["1", "yes"]
+        self.answers = ["1"]
         code, out = self.ai("auth", jg_version=interrupt)
         self.assertEqual(code, 130)
         self.assertNotIn("Nothing was changed", out)
@@ -211,7 +219,7 @@ class CliTests(Sandbox):
         self.assert_no_leak(out)
 
     def test_cancel_while_saving_removes_the_new_secret(self):
-        self.answers = ["1", "yes"]
+        self.answers = ["1"]
         with mock.patch.object(cred, "save_metadata", side_effect=KeyboardInterrupt):
             code, out = self.ai("auth")
         self.assertEqual(code, 130)
@@ -226,7 +234,7 @@ class CliTests(Sandbox):
             real_set(account, value)
             raise KeyboardInterrupt
 
-        self.answers = ["1", "yes"]
+        self.answers = ["1"]
         with mock.patch.object(self.store, "set", side_effect=set_then_interrupt):
             code, out = self.ai("auth")
         self.assertEqual(code, 130)
@@ -240,7 +248,7 @@ class CliTests(Sandbox):
             real_save(meta, env)
             raise KeyboardInterrupt
 
-        self.answers = ["1", "yes"]
+        self.answers = ["1"]
         with mock.patch.object(cred, "save_metadata", side_effect=save_then_interrupt):
             code, out = self.ai("auth")
         self.assertEqual(code, 130)
@@ -248,11 +256,11 @@ class CliTests(Sandbox):
         meta = cred.load_metadata(self.env)
         self.assertEqual(cred.decode_secret(self.store.data[meta["credential_ref"]], meta), SENTINEL_KEY)
 
-    def test_rotation_deletes_old_secret_and_keeps_consent(self):
-        self.answers = ["1", "yes"]
+    def test_rotation_deletes_old_secret(self):
+        self.answers = ["1"]
         self.ai("auth")
         old_ref = cred.load_metadata(self.env)["credential_ref"]
-        self.answers = ["1", "1"]  # change key -> same provider; consent still valid, no "yes" needed
+        self.answers = ["1", "1"]  # change key -> same provider
         code, out = self.ai("auth")
         self.assertEqual(code, 0, out)
         meta = cred.load_metadata(self.env)
@@ -260,10 +268,9 @@ class CliTests(Sandbox):
         self.assertEqual(list(self.store.data), [meta["credential_ref"]])
         self.assertEqual(meta["pending_secret_delete"], [])  # the write-ahead entry is cleared
         self.assertEqual(meta["profile_generation"], 2)
-        self.assertIn("Consent for this provider and endpoint is still valid", out)
 
     def test_rotation_with_locked_old_store_records_pending(self):
-        self.answers = ["1", "yes"]
+        self.answers = ["1"]
         self.ai("auth")
         old_ref = cred.load_metadata(self.env)["credential_ref"]
         self.stores["FakeStore"] = None
@@ -276,7 +283,7 @@ class CliTests(Sandbox):
 
     def rotate_with_interrupt(self, interrupt_old_delete):
         """Change the key, with Ctrl+C landing between the commit and the old key's removal."""
-        self.answers = ["1", "yes"]
+        self.answers = ["1"]
         self.ai("auth")
         old_ref = cred.load_metadata(self.env)["credential_ref"]
         real_delete = self.store.delete
@@ -323,7 +330,7 @@ class CliTests(Sandbox):
         self.assert_logout_removes_both_keys(old_ref)  # deleting a missing entry is not an error
 
     def test_existing_config_exit(self):
-        self.answers = ["1", "yes"]
+        self.answers = ["1"]
         self.ai("auth")
         before = cred.load_metadata(self.env)
         self.answers = ["2"]
@@ -344,7 +351,7 @@ class CliTests(Sandbox):
         self.assertEqual(self.records(), [])  # the npm jg never ran
 
     def test_logout_clean_keeps_jg_on_the_shim(self):
-        self.answers = ["1", "yes"]
+        self.answers = ["1"]
         self.ai("auth")
         path_after_auth = self.user_env.user_path
         writes = list(self.user_env.writes)
@@ -358,7 +365,7 @@ class CliTests(Sandbox):
         self.assert_jg_is_the_shim_and_falls_back()
 
     def test_logout_drops_a_path_backup_from_an_older_version(self):
-        self.answers = ["1", "yes"]
+        self.answers = ["1"]
         self.ai("auth")
         meta = cred.load_metadata(self.env)
         meta["path_backup"] = {"value": str(self.bin), "type": 2, "written": self.user_env.user_path}
@@ -378,7 +385,7 @@ class CliTests(Sandbox):
             raise KeyboardInterrupt
 
         self.user_env.broadcast = interrupt
-        self.answers = ["1", "yes"]
+        self.answers = ["1"]
         code, out = self.ai("auth")
         self.assertEqual(code, 130)
         self.assertTrue(self.user_env.user_path.startswith(str(self.shim_dir)))
@@ -394,7 +401,7 @@ class CliTests(Sandbox):
             raise PermissionError(5, "access denied")
 
         self.user_env.write_user_path = refuse
-        self.answers = ["1", "yes"]
+        self.answers = ["1"]
         code, out = self.ai("auth")
         self.assertEqual(code, 0, out)
         self.assertIn("Could not update the user PATH", out)
@@ -407,14 +414,14 @@ class CliTests(Sandbox):
         self.assertIsNone(cred.load_metadata(self.env))
 
     def test_logout_when_store_fails_keeps_pending_and_disables(self):
-        self.answers = ["1", "yes"]
+        self.answers = ["1"]
         self.ai("auth")
         self.store.fail_delete = True
         code, out = self.ai("logout")
         self.assertEqual(code, 1)
         meta = cred.load_metadata(self.env)
         self.assertFalse(cred.is_active(meta))
-        self.assertIsNone(meta["consent"])
+        self.assertNotIn("consent", meta)
         self.assertEqual(len(meta["pending_secret_delete"]), 1)
         self.store.fail_delete = False
         self.assertEqual(self.ai("logout")[0], 0)
@@ -450,12 +457,9 @@ class CliTests(Sandbox):
         self.assertEqual((report["state"], report["reason"], report["jg"], report["jevgrep"]),
                          ("ready", None, "shim", "ready"))
         self.assertEqual(report["endpoint_host"], "api.typesafe.ai")
-        meta["consent"] = None
-        cred.save_metadata(meta, self.env)
-        self.assertEqual(self.doctor()["reason"], "no_consent")
 
     def test_doctor_ready_with_any_jg_version(self):
-        # The version is reported for information only; a key (with its consent) is what counts.
+        # The version is reported for information only; a key is what counts.
         cred.save_metadata(active_metadata(), self.env)
         self.env["PATH"] = os.pathsep.join([str(self.shim_dir), self.env["PATH"]])
         for version in ("0.9.0", "10.0.0", None):
@@ -467,7 +471,7 @@ class CliTests(Sandbox):
             self.assertFalse([h for h in report["hints"] if "support" in h], report["hints"])
 
     def test_auth_accepts_any_jg_version(self):
-        self.answers = ["1", "yes"]
+        self.answers = ["1"]
         code, out = self.ai("auth", jg_version=lambda real: "3.0.0")
         self.assertEqual(code, 0, out)
         self.assertIn("Engine: jg 3.0.0", out)

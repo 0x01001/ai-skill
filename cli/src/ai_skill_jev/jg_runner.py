@@ -108,7 +108,7 @@ def split_command(args: Sequence[str]) -> tuple:
     return first, info
 
 
-# Flags that widen what jg sends past the consent (plan 6.4): hidden files, ignored files,
+# Flags that widen what jg sends past the exclusions (plan 6.4): hidden files, ignored files,
 # dependency dirs, and jg's own secret-content filter. jg 0.8.5 has no short aliases for them.
 BLOCKED_SEARCH_FLAGS = ("include-sensitive", "hidden", "no-ignore", "include-dependencies")
 MAX_REQUESTS_CAP = int(DEFAULT_MAX_REQUESTS)
@@ -138,7 +138,7 @@ def _is_within(path: str, base: str) -> bool:
 
 
 def check_search_root(root: Optional[str], cwd: str) -> str:
-    """The search root must lie inside the git repo of the working directory (the consent's scope)."""
+    """The search root must lie inside the git repo of the working directory (the search scope)."""
     base_cwd = os.path.realpath(cwd)
     repo = _git_root(base_cwd)
     if repo is None:

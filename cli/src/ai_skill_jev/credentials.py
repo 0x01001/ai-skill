@@ -17,7 +17,7 @@ import threading
 from pathlib import Path
 from typing import Callable, Optional
 
-from . import POLICY_VERSION, SECRET_SERVICE
+from . import SECRET_SERVICE
 
 METADATA_SCHEMA = 1
 SECRET_FORMAT = 1
@@ -200,7 +200,6 @@ def new_metadata() -> dict:
         "secret_backend": None,
         "credential_ref": None,
         "profile_generation": 0,
-        "consent": None,
         "validated_at": None,
         "engine": {"name": "jg"},
         "pending_secret_delete": [],
@@ -210,18 +209,6 @@ def new_metadata() -> dict:
 def is_active(meta: Optional[dict]) -> bool:
     """A Jev key is configured: the only state in which the shim runs the real `jg`."""
     return bool(meta) and bool(meta.get("enabled")) and bool(meta.get("credential_ref"))
-
-
-def consent_valid(meta: Optional[dict]) -> bool:
-    if not meta:
-        return False
-    consent = meta.get("consent")
-    return (
-        isinstance(consent, dict)
-        and consent.get("provider") == meta.get("provider")
-        and consent.get("endpoint") == meta.get("base_url")
-        and consent.get("policy_version") == POLICY_VERSION
-    )
 
 
 # --------------------------------------------------------------------------- secret store

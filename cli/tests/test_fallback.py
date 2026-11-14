@@ -3,7 +3,7 @@
 import io
 import os
 
-from ai_skill_jev import EXIT_FALLBACK, POLICY_VERSION
+from ai_skill_jev import EXIT_FALLBACK
 from ai_skill_jev.credentials import encode_secret, metadata_path, save_metadata
 from ai_skill_jev.jg_shim import run
 
@@ -35,26 +35,9 @@ class FallbackTests(Sandbox):
         self.assertEqual(self.scan_for(SENTINEL_KEY), [])
         return err
 
-    def test_no_consent(self):
-        self.activate(consent=False)
-        self.assert_fallback("no_consent")
-
-    def test_outdated_policy(self):
-        meta = self.activate()
-        meta["consent"]["policy_version"] = POLICY_VERSION - 1
-        save_metadata(meta, self.env)
-        self.assert_fallback("no_consent")
-
-    def test_consent_for_other_endpoint(self):
-        meta = self.activate()
-        meta["base_url"] = "https://evil.example/v1"
-        save_metadata(meta, self.env)
-        self.assert_fallback("no_consent")
-
     def test_secret_bound_to_other_endpoint(self):
         meta = self.activate()
         meta["base_url"] = "https://evil.example/v1"
-        meta["consent"]["endpoint"] = "https://evil.example/v1"
         save_metadata(meta, self.env)
         self.assert_fallback("no_key")
 

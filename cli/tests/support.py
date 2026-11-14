@@ -227,8 +227,7 @@ class Sandbox(unittest.TestCase):
 
 
 def active_metadata(provider="typesafe", base_url="https://api.typesafe.ai/v1", model="jev-1.13.0",
-                    ref="ref0", consent=True):
-    from ai_skill_jev import POLICY_VERSION
+                    ref="ref0"):
     from ai_skill_jev.credentials import new_metadata
 
     meta = new_metadata()
@@ -236,8 +235,6 @@ def active_metadata(provider="typesafe", base_url="https://api.typesafe.ai/v1", 
         "enabled": True, "provider": provider, "base_url": base_url, "model": model,
         "endpoint_host": base_url.split("/")[2], "secret_backend": "FakeStore", "credential_ref": ref,
         "profile_generation": 1,
-        "consent": {"provider": provider, "endpoint": base_url, "policy_version": POLICY_VERSION,
-                    "accepted_at": "2026-11-14T00:00:00Z"} if consent else None,
     })
     return meta
 

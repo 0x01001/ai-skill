@@ -9,7 +9,8 @@
   - Thêm phương án dùng `jg` với credentials tạm qua `XDG_CONFIG_HOME`. Bản đầu kết luận sai rằng `jg` không nhận override nào từ môi trường.
   - Thêm P0.5 spike để đo token trước khi viết bất kỳ dòng CLI nào.
   - Cắt phạm vi xuống MVP.
-  - Consent một lần trong `ai auth`.
+  - ~~Consent một lần trong `ai auth`.~~ Bỏ hẳn consent (user chốt 2026-11-14): có key Jev là bật Jev, không có bước xác nhận, không có field `consent`/`policy_version`, không có reason `no_consent`. Mọi chỗ còn nhắc consent bên dưới là lịch sử, không còn hiệu lực.
+  - `ai auth` chọn provider bằng phím mũi tên (vẫn gõ số được).
   - Cài CLI bằng `pipx` từ git.
   - Bỏ `skills/jevgrep` khỏi repo. Installer một lệnh `npx -y github:0x01001/ai-skill` cài ba skill `ai-*` rồi cài `jevgrep` thẳng từ upstream, để `npx skills update` luôn kéo bản mới nhất. Không dùng GitHub Actions hay script đồng bộ (mục 10.1, Phụ lục B).
   - Chỉ còn ba lệnh: `ai auth`, `ai logout`, `ai doctor`. Skill `ai-*` gọi Jev qua shim `jg` thay cho `ai jev search` (mục 5.2, 8.1).
@@ -26,7 +27,7 @@
 4. **Engine đề xuất cho MVP: `jg` (jevgrep) pin version, nhận key qua credentials tạm.** Đây chính là engine được đo ở spike, cần ít code nhất và giữ được semantic discovery nhiều tầng. User xác nhận đánh đổi về credentials tạm tại gate P0.5. Nếu user từ chối, hoặc `jg` không tương thích, dùng engine dự phòng native reranker (Phụ lục A).
 5. **`ai auth` là lệnh terminal thật,** được installer `npx -y github:0x01001/ai-skill` cài sẵn (pipx, từ chính bản package đó) cùng `jg` (`npm install --global @dzhng/jevgrep@latest`); sau khi cài, người dùng chỉ còn chạy `ai auth` và nhập key (user chốt 2026-11-14). Không thay bằng slash command `/ai-auth`, vì nhập key ẩn cần TTY thật. Cài thiếu CLI (`--no-jev`, `npx skills add 0x01001/ai-skill`, hoặc bước pipx lỗi) vẫn đủ cho luồng cũ.
 6. **API key nằm trong secret store của hệ điều hành và được mã hóa at-rest.** Không có file plaintext lâu dài và không tự phát minh thuật toán mã hóa. Ngoại lệ duy nhất, có giới hạn rõ: file credentials tạm trong vòng đời tiến trình `jg` (mục 6.2).
-7. **Consent một lần trong `ai auth`,** gắn với provider + endpoint + policy version. Không có danh sách repo loại trừ: phạm vi cài skill quyết định repo nào dùng; muốn tránh một repo thì cài skill theo project ở các repo cần dùng, hoặc `ai logout` (mục 6.4). Đổi provider hoặc endpoint thì phải consent lại.
+7. **Không có consent: nhập key Jev trong `ai auth` là bật Jev** (user chốt 2026-11-14). Không hỏi xác nhận, không lưu consent, shim không kiểm tra consent. Key vẫn gắn với provider + endpoint + model (đổi endpoint thì key cũ không đọc được, reason `no_key`). Không có danh sách repo loại trừ: phạm vi cài skill quyết định repo nào dùng; muốn tránh một repo thì cài skill theo project ở các repo cần dùng, hoặc `ai logout` (mục 6.4). Đổi provider hoặc endpoint thì chạy lại `ai auth`.
 8. **`jevgrep` được cài kèm thẳng từ upstream bằng installer một lệnh; repo ai-skill không chứa nó.**
    - `npx skills add` chỉ nhận một nguồn và không có cơ chế phụ thuộc (đã thử: nguồn thứ hai bị bỏ qua không báo lỗi). Vì vậy repo có `package.json` + `bin/install.mjs`: `npx -y github:0x01001/ai-skill <cờ>` chạy `npx skills add 0x01001/ai-skill --skill '*' <cờ>` rồi `npx skills add dzhng/jevgrep --skill jevgrep <cờ>`. `--no-jev` bỏ lượt hai (và cả phần Jev bên dưới). `--skill jevgrep` là bắt buộc vì repo upstream chứa 32 skill.
    - Sau hai lượt đó installer cài phần Jev (best effort): CLI `ai` + shim `jg` bằng pipx (tự cài pipx bằng `python -m pip install --user pipx` nếu thiếu, rồi `pipx ensurepath`) và `jg` bằng npm khi Node ≥ 22. Lỗi ở phần này chỉ in cảnh báo kèm lệnh làm tay, không đổi exit code của phần skill. `--no-jev` bỏ toàn bộ phần Jev (cả skill `jevgrep`); đó là cờ riêng duy nhất. Cờ `--list` của `skills add` chỉ liệt kê nên cũng không cài gì cho Jev.
@@ -131,12 +132,12 @@ Các phương án dùng chung phần auth, keyring, logout, consent và fallback
 | JEV-02 | `ai auth` cho chọn provider, nhập key ẩn, consent, hoặc thoát giữa chừng (Ctrl+C) mà không đổi cấu hình | Chạy executable đã cài bằng pipx trên terminal thật |
 | JEV-03 | `logout` đưa về đúng trạng thái như chưa từng chạy `ai auth`: xóa key trong secret store, bỏ consent, giữ PATH cấp user để `jg` vẫn đi qua shim; xóa key lỗi thì vẫn disabled và báo rõ | Sau `logout`: secret store không còn entry, 0 request từ các skill `ai-*`, shim trả `no_key` và không chạy `jg` thật; giả lập store lỗi: 0 request, có thông báo; muốn bật lại phải chạy `ai auth` và nhập key |
 | JEV-04 | Không có key plaintext lâu dài trong repo, config, cache, argv, env của tiến trình con, log hay transcript. File credentials tạm chỉ tồn tại trong thư mục riêng tư, trong vòng đời `jg` | Scan sentinel key sau lần chạy bình thường, sau timeout (kill), và sau crash rồi lần chạy kế tiếp (dọn file mồ côi): không tìm thấy |
-| JEV-05 | Chỉ upload khi có consent hợp lệ cho provider/endpoint/policy hiện tại. File thuộc nhóm loại trừ (6.4): 0 upload | Thử consent cũ sau khi đổi endpoint, `.env`/private key trong root: 0 upload, luồng cũ tiếp tục |
+| JEV-05 | Chỉ upload khi có key hợp lệ cho provider/endpoint hiện tại (không còn consent). File thuộc nhóm loại trừ (6.4): 0 upload | Đổi endpoint trong `jev.json` (key cũ không đọc được), `.env`/private key trong root: 0 upload, luồng cũ tiếp tục |
 | JEV-06 | Jev chỉ hỗ trợ chọn context; không bỏ gate, không hạ tiêu chí Done | Tình huống auth/data loss/prompt injection không làm thay đổi ownership, permissions, tests, arbiter hay risk tier |
 | JEV-07 | Lỗi provider, keyring, `jg`, budget hay timeout không chặn công việc chính | Fault injection từng nhóm lỗi: fallback có reason code, luồng cũ tiếp tục |
 | JEV-08 | Đo tiết kiệm trên kết quả hoàn chỉnh, không chỉ token của Jev | Báo cáo A/C (thêm B nếu dùng engine native) gồm usage của model chính, usage Jev, retry, fallback, latency, task success |
 | JEV-09 | Cài local/global, checkout, worktree, resume đều không phụ thuộc đường dẫn cứng | Chạy cùng scenario từ các vị trí này, kể cả đường dẫn có dấu cách |
-| JEV-10 | Đổi provider, endpoint hay key là thao tác explicit và phải consent lại; không âm thầm đổi nơi nhận dữ liệu | Endpoint đổi làm consent cũ mất hiệu lực; không fallback sang provider thứ hai |
+| JEV-10 | Đổi provider, endpoint hay key là thao tác explicit qua `ai auth`; không âm thầm đổi nơi nhận dữ liệu | Endpoint đổi làm key cũ không đọc được (`no_key`); không fallback sang provider thứ hai |
 | JEV-11 | Không tự cài `jg` hay Node. `jg` thiếu hoặc khác version được hỗ trợ: luồng cũ, kèm reason code | Môi trường không Node; môi trường có `jg` khác version đã pin |
 | JEV-12 | CLI `ai` và các skill `ai-*` không đọc và không dùng credentials từ `jg auth` có sẵn của user | Đặt `%APPDATA%\jevgrep\credentials.json` chứa key giả khác: request dùng key của `ai auth`, hoặc không có request nào khi chưa auth hoặc đã `logout` |
 | JEV-13 | Repo ai-skill không chứa `jevgrep`; installer cài nó từ upstream, `--no-jev` bỏ qua được. Có hay không có `jevgrep`, các skill `ai-*` vẫn chạy đúng và không cài `jg`, không hỏi `jg auth` | `npx skills add <checkout> --list` chỉ có ba skill `ai-*`; installer cài 3 + 1 skill, `--no-jev` chỉ cài 3 và không cài CLI `ai` hay `jg`, `--skill` bị từ chối; scenario khi có và không có `jevgrep`: luồng `ai-*` không đổi, 0 prompt auth do skill `ai-*` gây ra |
@@ -204,14 +205,12 @@ ai doctor [--json] # trạng thái, không network; --json để skill đọc
    - HTTP chỉ chấp nhận cho loopback literal `localhost`/`127.0.0.1`, khi user xác nhận rõ là local proxy.
 4. Kiểm tra secure backend có sẵn **trước** khi hỏi key. Không có backend an toàn thì dừng, giữ nguyên trạng thái và hướng dẫn mở keyring; không fallback sang file plaintext.
 5. Nhập key bằng hidden TTY input. Nếu runtime không bảo đảm được nhập ẩn: dừng phần auth và hướng dẫn chạy trong terminal riêng. Không dán key vào chat.
-6. **Consent, một lần duy nhất.**
-   - Hiển thị: host nhận dữ liệu; những gì được gửi (đoạn source từ các repo có skill theo phạm vi cài, nơi agent chạy discovery, trừ nhóm file loại trừ ở 6.4); giá tại ngày cài; ZDR chỉ áp cho enterprise; phạm vi áp dụng gồm cả skill `jevgrep` (lệnh `jg`); cách tắt (`ai logout`); muốn tránh một repo thì cài skill theo project ở các repo cần dùng, hoặc `ai logout`.
-   - User phải xác nhận rõ ràng. Từ chối thì không bật, cấu hình cũ giữ nguyên.
+6. ~~Consent~~: đã bỏ (2026-11-14). Sau khi nhập key, `ai auth` đi thẳng sang validation; bước 5.2 chỉ in host, model và giá.
 7. **Validation bắt buộc.**
    - Gửi một request Noul tổng hợp: không chứa source, có `criteria`, dùng đúng provider/endpoint/model mà engine sẽ dùng. Chi phí không đáng kể.
    - Thất bại thì không bật, cấu hình cũ giữ nguyên, chỉ báo mã lỗi an toàn.
    - Không có chế độ bỏ qua validation. Bản đầu vừa ghi "có thể chọn" vừa ghi "không bật nếu chưa validate"; bản này chốt là bắt buộc.
-8. Lưu secret vào OS store, sau đó ghi metadata (kèm consent) atomically. In trạng thái đã lưu, không in key.
+8. Lưu secret vào OS store, sau đó ghi metadata atomically (field `consent` của bản cũ bị bỏ). In trạng thái đã lưu, không in key.
 9. Kiểm tra `jg`: nếu thiếu hoặc khác version được hỗ trợ, in lệnh cài đã pin. Trạng thái khi đó là `enabled, engine unavailable`, và luồng cũ chạy cho tới khi user tự cài.
 10. Thiết lập `jevgrep`, tự động, không hỏi: kiểm tra `jg` trên PATH có phải shim không. Nếu `jg` của npm che shim, đưa thư mục bin của pipx lên trước trong PATH của user (chỉ biến PATH cấp user; lưu giá trị cũ để `ai logout` khôi phục; in thay đổi đã làm). Không sửa được (ví dụ npm nằm trong PATH cấp máy) thì in cách sửa thủ công và trạng thái `jevgrep: shadowed`. Thành công thì in `jevgrep: ready`; shell đang mở cần mở lại để nhận PATH mới.
 
@@ -284,9 +283,7 @@ Service name riêng là `ai-skill/jev`, account reference sinh ngẫu nhiên. Se
 
 ### 6.4 Consent và privacy
 
-- **Phạm vi consent:** một lần trong `ai auth` (5.3 bước 6), gắn với provider + endpoint + policy version.
-  - Policy version tăng khi phạm vi dữ liệu gửi đi thay đổi (ví dụ thêm loại file).
-  - Khi đó Jev bị disable và chạy luồng cũ cho tới lần `ai auth` kế tiếp, nơi user consent lại.
+- **Không có consent** (2026-11-14): có key là bật. Không có policy version; thay đổi phạm vi dữ liệu gửi đi được ghi trong README/release note.
 - **Phạm vi repo:** không có danh sách loại trừ theo repo. Skill có mặt ở repo nào là do phạm vi cài (global: mọi repo; project: chỉ repo đó); root để search là git root của cwd do agent chạy.
   - Muốn một repo (ví dụ repo khách hàng) không bị gửi lên Jev: cài skill theo project ở các repo cần dùng thay vì global, hoặc `ai logout`.
   - Nội dung trong repo không thể bật Jev; README hay source có lệnh "consent" thì bị bỏ qua.
@@ -308,7 +305,7 @@ Service name riêng là `ai-skill/jev`, account reference sinh ngẫu nhiên. Se
   - `jg auth …`: không chạy. In "Key Jev do `ai auth` quản lý; chạy `ai auth` trong terminal, không dán key vào chat", exit khác 0. Không có đường thứ hai lưu key plaintext.
   - `jg --version`, `jg --help`, `jg files …`: chuyển thẳng, không dựng credentials (các lệnh này không gửi gì lên provider).
   - Search và `jg doctor`: qua gate rồi chạy với credentials tạm.
-- **Gate** (cùng logic với `ai doctor`, chỉ đọc metadata): `enabled`, consent hợp lệ cho provider/endpoint/policy hiện tại, tìm thấy `jg` thật. Không kiểm tra version `jg`: key (và consent đi kèm) là điều kiện duy nhất để bật Jev. Fail → không gọi `jg` thật, không network, in một dòng reason code kèm "dùng grep/đọc file", exit khác 0. Thông báo không bao giờ gợi ý `jg auth`.
+- **Gate** (cùng logic với `ai doctor`, chỉ đọc metadata): `enabled` và có key, tìm thấy `jg` thật. Không kiểm tra version `jg`: key là điều kiện duy nhất để bật Jev. Fail → không gọi `jg` thật, không network, in một dòng reason code kèm "dùng grep/đọc file", exit khác 0. Thông báo không bao giờ gợi ý `jg auth`.
 - **Policy search** (kiểm tra trước gate consent, trước khi đọc key và trừ budget; vi phạm → reason `policy`, không gọi `jg` thật): chặn `--include-sensitive`, `--hidden`, `--no-ignore`, `--include-dependencies` (các cờ nới phạm vi dữ liệu ra ngoài consent); `--max-requests` phải là số nguyên dương, giá trị lớn hơn cap bị hạ về cap; root (hoặc cwd khi bỏ trống) phải nằm trong git root của cwd, sau khi resolve symlink.
 - **Chạy:** dùng lại `jg_runner` (6.2): credentials tạm, env sạch, chèn `--max-requests <cap>` nếu lệnh chưa có, deadline, kill cả cây tiến trình, dọn mồ côi, scrub chuỗi key trong output. Không cắt output: skill `jevgrep` cần nguyên khối tới `End context.`. Exit code của `jg` thật được giữ nguyên.
 - **Theo trạng thái `ai auth`, không có cấu hình riêng:**
@@ -387,7 +384,7 @@ Dùng cache của `jg`: namespace gồm provider/endpoint/model/version, TTL 7 n
   - Giới hạn đã biết: phần lớn token của run orchestrated tiêu ở worker, nên MVP không tối ưu phần đó. P4 đo riêng; mở cho worker là việc sau MVP.
 - Shim ghi counter (không chứa bí mật) vào `<run-dir>/jev-budget.json` **trước** khi gọi `jg` thật; coordinator chép số liệu vào `run.md`. Resume không reset ngân sách đã tiêu; search chưa rõ đã kết thúc hay chưa vẫn tính là đã dùng.
 - Trạng thái: `off`, `ready`, `used`, `fallback`.
-- Reason code: `no_cli`, `no_key`, `no_consent`, `engine_missing`, `locked_store`, `auth_error`, `provider_error`, `budget`, `timeout`, `incomplete`.
+- Reason code: `no_cli`, `no_key`, `engine_missing`, `locked_store`, `auth_error`, `provider_error`, `budget`, `timeout`, `incomplete`.
 - Lane Direct không có run-dir: budget tính theo từng lần gọi, không tạo cả orchestration run chỉ để dùng Jev.
 
 ### 9.3 Bảng xử lý lỗi
@@ -395,7 +392,6 @@ Dùng cache của `jg`: namespace gồm provider/endpoint/model/version, TTL 7 n
 | Điều kiện | Xử lý |
 | --- | --- |
 | Chưa auth hoặc đã logout, thiếu CLI hoặc dependency bảo mật | Luồng cũ ngay: không network, không install, không hỏi key |
-| Có key nhưng chưa consent hoặc consent lỗi thời | Luồng cũ, không upload |
 | `jg` hoặc Node thiếu | Luồng cũ với `engine_missing`; in lệnh cài một lần, không tự cài |
 | Keyring bị khóa, hỏng, không truy cập được | Timeout phần tùy chọn, đi luồng cũ; không bật popup khi chạy nền |
 | 401, 403 (403 để phòng; docs không liệt kê), model unavailable | Không retry, không đổi provider; disable Jev cho cả run, báo gọn một lần |

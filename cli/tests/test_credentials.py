@@ -5,7 +5,6 @@ import time
 import unittest
 from pathlib import Path
 
-from ai_skill_jev import POLICY_VERSION
 from ai_skill_jev import credentials as cred
 from ai_skill_jev import pathenv, provider
 
@@ -65,17 +64,6 @@ class SecretBindingTests(unittest.TestCase):
             with self.assertRaises(cred.StateError) as ctx:
                 cred.read_key(meta, factory, timeout=0.5)
             self.assertEqual(ctx.exception.reason, reason)
-
-    def test_consent_valid(self):
-        meta = active_metadata()
-        self.assertTrue(cred.consent_valid(meta))
-        self.assertFalse(cred.consent_valid(active_metadata(consent=False)))
-        stale = active_metadata()
-        stale["consent"]["policy_version"] = POLICY_VERSION + 1
-        self.assertFalse(cred.consent_valid(stale))
-        moved = active_metadata()
-        moved["base_url"] = "https://other.example/v1"
-        self.assertFalse(cred.consent_valid(moved))
 
 
 class MetadataTests(Sandbox):

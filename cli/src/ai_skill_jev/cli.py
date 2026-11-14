@@ -14,9 +14,9 @@ import warnings
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
-from . import JG_INSTALL_COMMAND, POLICY_VERSION, SCHEMA_VERSION, TOOL_ID, __version__
+from . import JG_INSTALL_COMMAND, SCHEMA_VERSION, TOOL_ID, __version__
 from . import credentials as cred
-from . import pathenv, provider
+from . import menu, pathenv, provider
 from .jg_runner import cleanup_orphans, jg_command, jg_version
 
 EXIT_OK = 0
@@ -58,6 +58,8 @@ class Deps:
     user_env: Callable[[], Optional[pathenv.UserEnv]] = _default_user_env
     shim_dir: Callable[[], Optional[str]] = pathenv.own_shim_dir
     jg_version: Callable = None
+    # Arrow-key picker; returns None to fall back to the numbered prompt. Only main() turns it on.
+    select: Optional[Callable[[str, List[str], int], Optional[int]]] = None
 
     def say(self, text: str = "") -> None:
         print(text, file=self.out)
@@ -138,6 +140,10 @@ def fix_path(deps: Deps) -> tuple:
 # --------------------------------------------------------------------------- ai auth
 
 def _choose(deps: Deps, prompt: str, options: List[str], default: int = 1) -> int:
+    if deps.select is not None:
+        picked = deps.select(prompt, options, default)
+        if picked is not None:
+            return picked
     for i, text in enumerate(options, 1):
         deps.say(f"  {i}) {text}")
     while True:
@@ -151,30 +157,6 @@ def _choose(deps: Deps, prompt: str, options: List[str], default: int = 1) -> in
 
 def _confirm(deps: Deps, prompt: str) -> bool:
     return deps.ask(prompt).strip().lower() in ("y", "yes")
-
-
-def consent_text(profile: dict) -> List[str]:
-    preset = provider.PRESETS.get(profile["provider"])
-    price = preset["price"] if preset else "set by the endpoint you entered"
-    gateway = profile["provider"] not in ("typesafe", "custom")
-    lines = [
-        "Before Jev is turned on, read what it sends and what it costs:",
-        f"  - Receiver: {profile['endpoint_host']} ({profile['provider']}), model {profile['model']}.",
-        "  - What is sent: excerpts of source files from the repos where the agent runs discovery",
-        "    (the git root of its working directory), minus excluded groups: .env*, private keys,",
-        "    credentials files, *.log, ai/running/, hidden files, dependency/build dirs.",
-        "    The exclusions are a heuristic, not a guarantee.",
-        "  - Scope: every repo where the ai-* skills or jevgrep are installed (a global install means every",
-        "    repo), and the jevgrep skill (`jg` command). To keep a repo out, install the skills per project",
-        "    only where you want Jev, or run `ai logout`.",
-        f"  - Price at install time: {price}.",
-        "  - Retention: TypeSafe's zero data retention applies to enterprise customers only; TypeSafe",
-        "    states request data is not used for training (docs.typesafe.ai/legal).",
-    ]
-    if gateway:
-        lines.append("    The gateway you picked has its own terms and retention.")
-    lines.append("  - Turn it off any time: `ai logout`.")
-    return lines
 
 
 def _pick_profile(deps: Deps) -> dict:
@@ -265,19 +247,6 @@ def _auth_steps(deps: Deps, meta: Optional[dict]) -> int:
     if limit is not None and len(secret) > limit:
         raise Abort("the key is too long for this secret store")
 
-    same_endpoint = (meta and cred.consent_valid(meta) and meta.get("provider") == profile["provider"]
-                     and meta.get("base_url") == profile["base_url"])
-    if same_endpoint:                                                   # step 6
-        consent = meta["consent"]
-        deps.say("Consent for this provider and endpoint is still valid.")
-    else:
-        for line in consent_text(profile):
-            deps.say(line)
-        if deps.ask('Type "yes" to accept: ').strip().lower() != "yes":
-            raise Abort("consent not given")
-        consent = {"provider": profile["provider"], "endpoint": profile["base_url"],
-                   "policy_version": POLICY_VERSION, "accepted_at": cred.now_iso()}
-
     deps.say("Validating the key with one small synthetic request (no source code)...")   # step 7
     result = deps.validate(profile["base_url"], profile["model"], key)
     del key
@@ -298,10 +267,10 @@ def _auth_steps(deps: Deps, meta: Optional[dict]) -> int:
         "secret_backend": store.backend_name,
         "credential_ref": new_ref,
         "profile_generation": int(updated.get("profile_generation") or 0) + 1,
-        "consent": consent,
         "validated_at": cred.now_iso(),
         "engine": {"name": "jg"},
     })
+    updated.pop("consent", None)  # written by older versions
     replaced = {"ref": old_ref, "backend": old_backend} if old_ref and old_ref != new_ref else None
     if replaced:
         # Write-ahead: the old key is queued for deletion in the same jev.json write that
@@ -371,7 +340,7 @@ def cmd_logout(deps: Deps) -> int:
         return EXIT_OK
 
     meta["enabled"] = False                                             # disable first
-    meta["consent"] = None
+    meta.pop("consent", None)
     cred.save_metadata(meta, deps.env)
 
     pending = list(meta.get("pending_secret_delete") or [])
@@ -398,7 +367,7 @@ def cmd_logout(deps: Deps) -> int:
                  "Unlock the store and run `ai logout` again.")
     else:
         cred.delete_metadata(deps.env)
-        deps.say("Logged out: Jev is disabled, the key and consent were removed.")
+        deps.say("Logged out: Jev is disabled, the key was removed.")
     deps.say("`jg` stays on the ai-skill shim, which does not run without a key; skills use the normal "
              "workflow. `ai auth` turns Jev back on.")
     return EXIT_FAIL if left else EXIT_OK
@@ -420,9 +389,6 @@ def doctor_report(deps: Deps) -> dict:
     if reason is None:
         if not active:
             reason = "no_key"
-        elif not cred.consent_valid(meta):
-            reason = "no_consent"
-            hints.append("Consent is missing or outdated; run `ai auth` in a terminal.")
         elif state.jg == "missing":
             reason = "engine_missing"
         elif state.jg == "shadowed":
@@ -443,7 +409,6 @@ def doctor_report(deps: Deps) -> dict:
         "model": meta.get("model") if active else None,
         "endpoint_host": meta.get("endpoint_host") if active else None,
         "secret_backend": meta.get("secret_backend") if active else None,
-        "consent_at": (meta.get("consent") or {}).get("accepted_at") if active else None,
         "jg": state.jg,
         "jg_path": state.jg_path,
         "jg_version": state.jg_version,
@@ -461,7 +426,7 @@ def cmd_doctor(deps: Deps, as_json: bool) -> int:
     deps.say(f"Jev: {report['state']}" + (f" (reason={report['reason']})" if report["reason"] else ""))
     if report["provider"]:
         deps.say(f"  provider: {report['provider']}  host: {report['endpoint_host']}  model: {report['model']}")
-        deps.say(f"  secret store: {report['secret_backend']}  consent: {report['consent_at']}")
+        deps.say(f"  secret store: {report['secret_backend']}")
     deps.say(f"jg: {report['jg']}" + (f" ({report['jg_version']}, {report['jg_path']})" if report["jg_path"] else ""))
     deps.say(f"jevgrep: {report['jevgrep']}")
     for hint in report["hints"]:
@@ -486,8 +451,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ai", description="Optional Jev discovery for the ai-skill skills.")
     parser.add_argument("--version", action="version", version=f"ai-skill {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("auth", help="store a Jev key in the OS secret store, give consent, set up jevgrep")
-    sub.add_parser("logout", help="disable Jev, delete the key and consent (jg stays on the shim)")
+    sub.add_parser("auth", help="store a Jev key in the OS secret store and set up jevgrep")
+    sub.add_parser("logout", help="disable Jev and delete the key (jg stays on the shim)")
     doctor = sub.add_parser("doctor", help="show the Jev state (no network, no secret store access)")
     doctor.add_argument("--json", action="store_true", help="machine-readable output for the skills")
     return parser
@@ -495,7 +460,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[List[str]] = None, deps: Optional[Deps] = None) -> int:
     args = build_parser().parse_args(argv)
-    deps = deps or Deps()
+    deps = deps or Deps(select=menu.arrow_select)
     _startup_cleanup(deps.env)
     if args.command == "auth":
         return cmd_auth(deps)

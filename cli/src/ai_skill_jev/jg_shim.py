@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Callable, List, Optional, Sequence, Tuple
 
 from . import EXIT_FALLBACK, JG_INSTALL_COMMAND
-from .credentials import (KeyringStore, StateError, atomic_write_json, consent_valid, is_active,
+from .credentials import (KeyringStore, StateError, atomic_write_json, is_active,
                           load_metadata, now_iso, read_key)
 from .jg_runner import SHIM_ENV, jg_command, prepare_search_args, run_jg, split_command
 from .pathenv import lookup_jg
@@ -218,8 +218,6 @@ def _run(argv, env, store_factory, out, err) -> int:
         search = command != "doctor"
         # Policy first: a refused search never reads the key, never spends budget, never runs jg.
         jg_args = prepare_search_args(args, os.getcwd()) if search else list(args)
-        if not consent_valid(meta):
-            raise Fallback("no_consent")
         # No version gate: whatever jg is installed runs (upstream updates it); a jg that cannot
         # start surfaces as OSError -> engine_missing below.
         key = read_key(meta, store_factory)
