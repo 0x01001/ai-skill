@@ -10,27 +10,19 @@
 
 from __future__ import annotations
 
-import json
 import os
 import sys
-import time
-from pathlib import Path
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
-from . import EXIT_FALLBACK
-from .credentials import (KeyringStore, StateError, atomic_write_json, is_active,
-                          load_metadata, now_iso, read_key)
+from . import EXIT_FALLBACK, budget
+from .budget import BUDGET_FILE, BUDGET_LOCK  # noqa: F401  (re-exported for callers and tests)
+from .credentials import KeyringStore, StateError, is_active, load_metadata, read_key
 from .engine import find_engine, install_command
 from .jg_runner import SHIM_ENV, prepare_search_args, run_jg, split_command
 from .provider import jg_credentials_payload
 
 RUN_DIR_FLAG = "--ai-run-dir"
 NO_CREDENTIAL_COMMANDS = {"files", "skill", "cache"}
-BUDGET_FILE = "jev-budget.json"
-BUDGET_LOCK = "jev-budget.lock"
-BUDGET_LIMIT = 3
-LOCK_WAIT = 5.0
-LOCK_STALE = 30.0
 
 AUTH_BLOCKED = ("ai-skill jev: the Jev key is managed by `ai auth`; run `ai auth` in a terminal. "
                 "Never paste the key into chat.")
@@ -68,87 +60,16 @@ def strip_run_dir(argv: Sequence[str]) -> Tuple[List[str], Optional[str]]:
 
 # --------------------------------------------------------------------------- budget
 
-def _acquire_lock(lock: Path) -> int:
-    """Take the budget lock, or fall back after LOCK_WAIT whatever blocks it.
-
-    Every iteration passes the deadline check, so nothing can spin past LOCK_WAIT. A stale lock
-    (older than LOCK_STALE) that we manage to delete is retried without sleeping. A held lock, a
-    lock whose mtime cannot be read or that cannot be deleted, and a create that fails with
-    another OSError (on Windows a lock still pending delete reports access denied) all wait.
-    """
-    deadline = time.monotonic() + LOCK_WAIT
-    while True:
-        removed_stale = False
-        try:
-            return os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
-            try:
-                if time.time() - os.path.getmtime(lock) > LOCK_STALE:
-                    os.unlink(lock)
-                    removed_stale = True
-            except OSError:
-                pass  # gone, unreadable or undeletable: wait like a held lock
-        except OSError:
-            pass
-        if time.monotonic() > deadline:
-            raise Fallback("budget", "budget counter is locked")
-        if not removed_stale:
-            time.sleep(0.05)
-
-
-def _with_budget(run_dir: str, update: Callable[[dict], None]) -> dict:
-    directory = Path(run_dir)
-    if not run_dir or not directory.is_dir():
-        raise Fallback("budget", "run dir not found")
-    lock = directory / BUDGET_LOCK
-    fd = _acquire_lock(lock)
-    try:
-        path = directory / BUDGET_FILE
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict) or not isinstance(data.get("calls"), list):
-                raise ValueError
-        except FileNotFoundError:
-            data = {"limit": BUDGET_LIMIT, "used": 0, "calls": []}
-        except (OSError, ValueError):
-            raise Fallback("budget", "budget file is unreadable")
-        update(data)
-        atomic_write_json(path, data)
-        return data
-    finally:
-        os.close(fd)
-        try:
-            os.unlink(lock)
-        except OSError:
-            pass
-
-
 def consume_budget(run_dir: str) -> int:
-    """Count one search before it starts (unknown outcomes stay counted). Returns its index."""
-    index = {}
-
-    def update(data: dict) -> None:
-        limit = data.get("limit", BUDGET_LIMIT)
-        used = data.get("used", 0)
-        if not isinstance(limit, int) or not isinstance(used, int) or used >= limit:
-            raise Fallback("budget", f"run budget used ({used}/{limit})")
-        data["used"] = used + 1
-        data["calls"].append({"at": now_iso(), "status": "started"})
-        index["i"] = len(data["calls"]) - 1
-
-    _with_budget(run_dir, update)
-    return index["i"]
+    """Count one search in the shared run budget (plan 3.6); a refusal becomes a fallback."""
+    try:
+        return budget.consume_search(run_dir)
+    except budget.BudgetError as exc:
+        raise Fallback("budget", str(exc))
 
 
 def record_budget(run_dir: str, index: int, status: str, coverage: Optional[str]) -> None:
-    def update(data: dict) -> None:
-        if 0 <= index < len(data["calls"]):
-            data["calls"][index].update({"status": status, "coverage": coverage, "ended": now_iso()})
-
-    try:
-        _with_budget(run_dir, update)
-    except Fallback:
-        pass
+    budget.record_search(run_dir, index, status, coverage)
 
 
 # --------------------------------------------------------------------------- main flow

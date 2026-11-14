@@ -1,6 +1,6 @@
 """Optional Jev integration for ai-skill: `ai auth`, `ai logout`, `ai doctor` and the `jg` shim."""
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 TOOL_ID = "ai-skill"
 SCHEMA_VERSION = 1

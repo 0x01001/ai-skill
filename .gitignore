@@ -9,3 +9,8 @@ __pycache__/
 build/
 dist/
 .venv/
+
+# Local secrets for the live tests (cli/tests/test_live_systemone.py); see .env.example
+.env
+.env.*
+!.env.example

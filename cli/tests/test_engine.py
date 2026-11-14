@@ -175,7 +175,8 @@ class EngineTests(Sandbox):
         report = self.doctor()
         self.assertEqual((report["state"], report["jg"], report["jevgrep"]), ("ready", "shim", "ready"))
         self.assertEqual((report["engine_path"], report["engine_private"]), (str(entry), True))
-        self.assertEqual(report["hints"], [])
+        # Only the `kinds: []` hint of `ai decide` (no evaluated model yet); nothing about jg or PATH.
+        self.assertEqual([h for h in report["hints"] if "ai decide" not in h], [])
 
     def test_doctor_shadowed_by_global_npm_hints_uninstall_not_admin(self):
         self.activate()

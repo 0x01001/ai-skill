@@ -133,7 +133,7 @@ class CliTests(Sandbox):
         self.assertTrue(cred.is_active(meta))
         self.assertNotIn("consent", meta)
         self.assertEqual((meta["provider"], meta["endpoint_host"]), ("typesafe", "api.typesafe.ai"))
-        self.assertEqual(self.validated, [("https://api.typesafe.ai/v1", "jev-1.13.0", True)])
+        self.assertEqual(self.validated, [("https://api.typesafe.ai/v1", "jev-1.14.0", True)])
         self.assertEqual(cred.decode_secret(self.store.data[meta["credential_ref"]], meta), SENTINEL_KEY)
         self.assertEqual(self.user_env.user_path, os.pathsep.join([str(self.shim_dir), str(self.bin)]))
         self.assertNotIn("path_backup", meta)

@@ -13,13 +13,13 @@ You are the **coordinator** for this request: route it to the lightest lane that
 
 With `--resume <run-dir>`, skip sizing and lane choice. A run dir holding `brief.md` is an ai-auto run: hand it to ai-auto (`Skill(skill: "ai-auto", args: "--resume <run-dir> <flags>")`), which keeps its Gate 3 duties. An `ai-orchestrate-*` dir whose parent dir holds `brief.md` belongs to that ai-auto run: hand the parent dir to ai-auto the same way. Any other goes straight to ai-orchestrate's Resume (`Skill(skill: "ai-orchestrate", args: "--resume <run-dir> <flags>")`), which reads that run's `run.md`. Re-route (section 3) only after the Resume checks.
 
-Answer three questions from the request and, when needed, a quick look at the repo (a scout subagent at tier `t1` when the answer needs a sweep across many files; tiers and their models live in [ai-orchestrate/references/models.md](../ai-orchestrate/references/models.md), which every subagent this skill spawns follows). Before such a sweep, run `ai doctor --json`; only when it reports `"tool": "ai-skill"`, `"state": "ready"` and `"jg": "shim"`, read [ai-orchestrate/references/jev.md](../ai-orchestrate/references/jev.md) and try one Jev search first, without `--ai-run-dir`. Otherwise skip it silently:
+Answer three questions from the request and, when needed, a quick look at the repo (a scout subagent at tier `t1` when the answer needs a sweep across many files; tiers and their models live in [ai-orchestrate/references/models.md](../ai-orchestrate/references/models.md), which every subagent this skill spawns follows). Run `ai doctor --json` once before sizing and read its two gates as [ai-orchestrate/references/jev.md](../ai-orchestrate/references/jev.md) says; this lane has no run dir, so every Jev call here omits `--ai-run-dir`. Before such a sweep, when the `jg` gate passes, try one Jev search first. When the gate lists `lane`, call `ai decide lane` with the request and the facts you gathered before weighing the lane yourself: `decided` picks the lane in section 2; `abstain` or `unavailable` leaves it to the questions below. Gate off: skip Jev silently. The questions:
 
 1. **Deliverables:** how many independent outputs (diffs, PRs, reports)?
 2. **Scope lock:** are the outcome, boundaries and "done" observable now, or would you be guessing?
 3. **Lifetime:** does it fit this turn, or must it outlive it (long builds, several PRs, overnight)?
 
-Done when all three have an answer; an unsure answer to scope lock points to ai-auto.
+Done when all three have an answer, or `ai decide lane` decided the lane; an unsure answer to scope lock points to ai-auto.
 
 ## 2. Pick a lane
 
@@ -36,7 +36,7 @@ Done when all three have an answer; an unsure answer to scope lock points to ai-
 
 ## 3. Re-route at milestones
 
-The lane is a decision, not a commitment. Log every switch with its reason:
+The lane is a decision, not a commitment. Log every switch with its reason. At each milestone, when the gate lists `reroute`, call `ai decide reroute` with the current `lane` and a `summary` of at most 2 000 chars (jobs and deliverables left, whether scope changed; `--ai-run-dir` only when a run dir exists): `shrunk_to_one` takes the last rule below, `scope_changed` stops and asks the user (inside ai-auto, its leave-the-scope rule). Otherwise judge it yourself:
 
 - Direct work that grows past one deliverable or one turn → ai-orchestrate, with the finished part recorded as job 0.
 - A contract that turns out fuzzy (acceptance not observable, prerequisites missing) → ai-auto's Lock gate. Leaving a running orchestrated run for it: stop admitting jobs, let every dispatched worker settle or stop it, record each job's state in `run.md`, and clean up as in ai-orchestrate section 7 (branches stay); the new brief names those branches as context.

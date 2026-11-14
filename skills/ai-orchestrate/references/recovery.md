@@ -2,6 +2,8 @@
 
 Classify every failed or stuck attempt before acting, and log the class and the action in `run.md`.
 
+0. When the Jev gate lists `failure` ([jev.md](jev.md)), run `ai decide failure` first and take its `class`. A `security_risk` from it always stands. On `abstain` or `unavailable`, classify by the table below as before.
+
 | Class | Signs | Action |
 | --- | --- | --- |
 | `transient`, `rate_limited` | Network blip, 429/overloaded, a session that settled mid-task on an API error | Retry once on the same route after the old attempt has settled; lower concurrency if it repeats |

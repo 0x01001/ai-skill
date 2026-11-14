@@ -25,6 +25,8 @@ Aliases for Claude Code units (`Agent`, Workflow `agent()`, `claude --bg --model
 
 R3 marks an approval gate, not a tier: an R3 job takes the row its work fits.
 
+Tier and effort may come from `ai decide jobs` ([jev.md](jev.md)), which maps by this same table; its risk is never below what the hard rules set (sensitive areas, external effects), and Rules 2–3 below still apply after it.
+
 ## Rules
 
 1. **Executable check first.** The starting effort holds only for a job whose check is a command; a job that can only be judged by reading starts at `high`. A read-only job counts as checked by command when its report cites `file:line` or commands the arbiter can re-run, so a `t1` scout starts at `low`.

@@ -228,7 +228,7 @@ class Sandbox(unittest.TestCase):
         return [p for p in root.iterdir()] if root.exists() else []
 
 
-def active_metadata(provider="typesafe", base_url="https://api.typesafe.ai/v1", model="jev-1.13.0",
+def active_metadata(provider="typesafe", base_url="https://api.typesafe.ai/v1", model="jev-1.14.0",
                     ref="ref0"):
     from ai_skill_jev.credentials import new_metadata
 
@@ -244,10 +244,17 @@ def active_metadata(provider="typesafe", base_url="https://api.typesafe.ai/v1", 
 class ProviderServer:
     """Local HTTP server on 127.0.0.1 that plays the provider for validation tests."""
 
-    def __init__(self, status=200, body=None, delay=0.0, location=None, raw=None, require_criteria=False):
-        """`require_criteria` plays a gateway that answers 422 to a question without `criteria.true`."""
+    def __init__(self, status=200, body=None, delay=0.0, location=None, raw=None, require_criteria=False,
+                 responder=None):
+        """`require_criteria` plays a gateway that answers 422 to a question without `criteria.true`.
+
+        `responder(request_body, n)` (n = 0-based request count) returns `(status, body, headers)`
+        and overrides the fixed answer: per-question answers, 429 with retry-after, and so on.
+        `body` may be a dict (sent as JSON) or bytes; `headers` a dict or None.
+        """
         self.status, self.body, self.delay, self.location, self.raw = status, body, delay, location, raw
         self.require_criteria = require_criteria
+        self.responder = responder
         self.requests = []
         outer = self
 
@@ -258,7 +265,8 @@ class ProviderServer:
                 outer.requests.append({"path": self.path, "headers": dict(self.headers), "body": body})
                 questions = body.get("questions") or {}
                 if outer.require_criteria and any(
-                        not isinstance(q.get("criteria"), dict) or "true" not in q["criteria"]
+                        q.get("type", "noul") == "noul" and (
+                            not isinstance(q.get("criteria"), dict) or "true" not in q["criteria"])
                         for q in questions.values()):
                     payload = b'{"error": "questions.relevant.criteria.true is required"}'
                     self.send_response(422)
@@ -271,8 +279,15 @@ class ProviderServer:
                     import time
 
                     time.sleep(outer.delay)
+                status, headers = outer.status, {}
                 payload = outer.raw if outer.raw is not None else json.dumps(outer.body or {}).encode()
-                self.send_response(outer.status)
+                if outer.responder is not None:
+                    status, answer, headers = outer.responder(body, len(outer.requests) - 1)
+                    payload = answer if isinstance(answer, bytes) else json.dumps(answer).encode()
+                    headers = headers or {}
+                self.send_response(status)
+                for name, value in headers.items():
+                    self.send_header(name, value)
                 if outer.location:
                     self.send_header("Location", outer.location)
                 self.send_header("Content-Type", "application/json")
@@ -297,6 +312,40 @@ class ProviderServer:
     def __exit__(self, *exc):
         self.httpd.shutdown()
         self.httpd.server_close()
+
+
+def answer_all(body, noul=0.95, choice=None, score=None, confidence=0.9, usage=(100, 0)):
+    """Answer every question of a /systemone request body.
+
+    noul: a float, or a callable(question_id, question) -> float.
+    choice: callable(question_id, question) -> (option, probabilities) or None (first option, sure).
+    score: callable(question_id, question) -> probabilities {"0": p, ...} or None (top level, sure).
+    """
+    answers = {}
+    for qid, q in (body.get("questions") or {}).items():
+        kind = q.get("type")
+        if kind == "noul":
+            value = noul(qid, q) if callable(noul) else noul
+            answers[qid] = {"type": "noul", "noul": value}
+        elif kind == "choice":
+            options = list(q["criteria"])
+            if choice is not None:
+                picked, probs = choice(qid, q)
+            else:
+                picked, probs = options[0], {o: (1.0 if o == options[0] else 0.0) for o in options}
+            answers[qid] = {"type": "choice", "choice": picked, "probabilities": probs,
+                            "confidence": confidence}
+        elif kind == "score":
+            levels = len(q["criteria"])
+            probs = score(qid, q) if score is not None else {str(levels - 1): 1.0}
+            probs = {str(i): float(probs.get(str(i), 0.0)) for i in range(levels)}
+            expected = sum(int(k) * v for k, v in probs.items())
+            answers[qid] = {"type": "score", "score": expected, "probabilities": probs,
+                            "confidence": confidence}
+    out = {"answers": answers}
+    if usage:
+        out["usage"] = {"input_tokens": usage[0], "output_tokens": usage[1]}
+    return out
 
 
 def good_answer(value=0.9, usage=True):

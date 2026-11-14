@@ -1,6 +1,6 @@
 {
   "name": "ai-skill",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "Installs the ai-skill skills (ai-main, ai-auto, ai-orchestrate), the jevgrep skill from dzhng/jevgrep, the optional ai CLI and jg in one command",
   "license": "MIT",

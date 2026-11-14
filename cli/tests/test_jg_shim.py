@@ -1,15 +1,14 @@
 import io
 import json
 import os
-import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from ai_skill_jev import EXIT_FALLBACK
 from ai_skill_jev.credentials import encode_secret, save_metadata
-from ai_skill_jev import jg_shim
-from ai_skill_jev.jg_shim import BUDGET_FILE, BUDGET_LOCK, Fallback, run, strip_run_dir
+from ai_skill_jev import budget
+from ai_skill_jev.jg_shim import BUDGET_FILE, BUDGET_LOCK, run, strip_run_dir
 
 from tests.support import SENTINEL_KEY, Sandbox, active_metadata, sha
 
@@ -19,102 +18,6 @@ class StripTests(unittest.TestCase):
         self.assertEqual(strip_run_dir(["q", "--ai-run-dir", "/r", "."]), (["q", "."], "/r"))
         self.assertEqual(strip_run_dir(["--ai-run-dir=/r", "q"]), (["q"], "/r"))
         self.assertEqual(strip_run_dir(["q", "--", "--ai-run-dir"]), (["q", "--", "--ai-run-dir"], None))
-
-
-class LockSpin(BaseException):
-    """Raised by a fake once the lock loop retries far more often than LOCK_WAIT allows.
-
-    A BaseException so that no `except Exception`/`except OSError` in the shim swallows it:
-    a regression to a busy loop fails the test instead of hanging it.
-    """
-
-
-def spin_guard(limit=200):
-    calls = {"n": 0}
-
-    def tick():
-        calls["n"] += 1
-        if calls["n"] > limit:
-            raise LockSpin("lock loop spins without the deadline or sleep")
-
-    return tick, calls
-
-
-class BudgetLockTests(Sandbox):
-    """`_acquire_lock` must fall back within LOCK_WAIT whatever keeps the lock busy."""
-
-    WAIT = 0.3
-    MAX_TRIES = 200  # ~6 tries fit in WAIT with the 50 ms sleep; a busy loop would pass this fast
-
-    def setUp(self):
-        super().setUp()
-        self.lock = self.tmp / BUDGET_LOCK
-        self.tries = 0
-        patcher = mock.patch.object(jg_shim, "LOCK_WAIT", self.WAIT)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
-    def count(self):
-        self.tries += 1
-        if self.tries > self.MAX_TRIES:
-            raise LockSpin("lock loop spins without the deadline or sleep")
-
-    def stale_lock(self):
-        self.lock.write_bytes(b"")
-        old = time.time() - jg_shim.LOCK_STALE - 60
-        os.utime(self.lock, (old, old))
-
-    def assert_bounded_fallback(self):
-        start = time.monotonic()
-        with self.assertRaises(Fallback) as caught:
-            jg_shim._acquire_lock(self.lock)
-        self.assertEqual(caught.exception.reason, "budget")
-        self.assertLess(time.monotonic() - start, self.WAIT + 2.0)
-
-    def test_held_lock_falls_back_after_wait(self):
-        self.lock.write_bytes(b"")
-        self.assert_bounded_fallback()
-
-    def test_stale_lock_that_cannot_be_deleted_falls_back(self):
-        self.stale_lock()
-        real_unlink = os.unlink
-
-        def refuse(path, *args, **kwargs):
-            if Path(path) == self.lock:
-                self.count()
-                raise PermissionError(13, "in use")
-            return real_unlink(path, *args, **kwargs)
-
-        with mock.patch.object(jg_shim.os, "unlink", side_effect=refuse):
-            self.assert_bounded_fallback()
-        self.assertGreater(self.tries, 0)
-
-    def test_lock_mtime_unreadable_falls_back(self):
-        self.lock.write_bytes(b"")
-
-        def unreadable(path):
-            self.count()
-            raise PermissionError(13, "denied")
-
-        with mock.patch.object(jg_shim.os.path, "getmtime", side_effect=unreadable):
-            self.assert_bounded_fallback()
-        self.assertGreater(self.tries, 0)
-
-    def test_create_denied_falls_back(self):
-        # On Windows a lock still pending delete makes the create fail with access denied.
-        def denied(path, *args, **kwargs):
-            self.count()
-            raise PermissionError(13, "pending delete")
-
-        with mock.patch.object(jg_shim.os, "open", side_effect=denied):
-            self.assert_bounded_fallback()
-        self.assertGreater(self.tries, 0)
-
-    def test_stale_lock_is_taken_over(self):
-        self.stale_lock()
-        fd = jg_shim._acquire_lock(self.lock)
-        os.close(fd)
-        self.assertTrue(self.lock.exists())
 
 
 class ShimTests(Sandbox):
@@ -243,19 +146,20 @@ class ShimTests(Sandbox):
         self.assertTrue(rec["creds_exists"])
         self.assertNotIn("coverage=", err)
 
-    def test_budget_counts_before_call_and_stops_at_three(self):
+    def test_budget_counts_before_call_and_stops_at_the_limit(self):
         self.activate()
         run_dir = self.tmp / "run"
         run_dir.mkdir()
-        for _ in range(3):
+        for _ in range(budget.SEARCH_LIMIT):
             self.assertEqual(self.shim("q", ".", "--ai-run-dir", str(run_dir))[0], 0)
         code, _, err = self.shim("q", ".", "--ai-run-dir", str(run_dir))
         self.assertEqual(code, EXIT_FALLBACK)
         self.assertIn("reason=budget", err)
-        self.assertEqual(len(self.records()), 3)
-        budget = json.loads((run_dir / BUDGET_FILE).read_text())
-        self.assertEqual(budget["used"], 3)
-        self.assertTrue(all(c["status"] == "exit=0" for c in budget["calls"]))
+        self.assertEqual(len(self.records()), budget.SEARCH_LIMIT)
+        data = json.loads((run_dir / BUDGET_FILE).read_text())
+        self.assertEqual(data["search"]["used"], 12)
+        self.assertEqual(data["decide"]["used"], 0)  # searches never touch the decide counters
+        self.assertTrue(all(c["status"] == "exit=0" for c in data["search"]["calls"]))
         self.assertTrue(all("--ai-run-dir" not in r["argv"] for r in self.records()))
 
     def test_rejected_key_is_an_auth_error_fallback(self):
@@ -272,8 +176,8 @@ class ShimTests(Sandbox):
             self.assertNotIn("Jev evaluation failed", err)  # jg's own text is not passed on
             self.assertEqual("ai auth" in err, reason == "auth_error")
             self.assertNotIn(SENTINEL_KEY, err)
-        budget = json.loads((run_dir / BUDGET_FILE).read_text())
-        self.assertEqual([c["status"] for c in budget["calls"]], [r for _, r in cases])
+        data = json.loads((run_dir / BUDGET_FILE).read_text())
+        self.assertEqual([c["status"] for c in data["search"]["calls"]], [r for _, r in cases])
 
     def test_failed_search_with_output_still_passes_through(self):
         self.activate()
@@ -283,30 +187,27 @@ class ShimTests(Sandbox):
         self.assertIn("src/events.ts", out)
         self.assertIn("coverage=partial (jg exit=1)", err)
 
-    def test_stuck_budget_lock_falls_back_without_calling_jg(self):
+    def test_held_budget_lock_falls_back_without_calling_jg(self):
         self.activate()
         run_dir = self.tmp / "run"
         run_dir.mkdir()
-        lock = run_dir / BUDGET_LOCK
-        lock.write_bytes(b"")
-        old = time.time() - jg_shim.LOCK_STALE - 60
-        os.utime(lock, (old, old))
-        real_unlink = os.unlink
-        tick, calls = spin_guard()
-
-        def refuse(path, *args, **kwargs):
-            if Path(path) == lock:
-                tick()
-                raise PermissionError(13, "in use")
-            return real_unlink(path, *args, **kwargs)
-
-        with mock.patch.object(jg_shim, "LOCK_WAIT", 0.3), \
-                mock.patch.object(jg_shim.os, "unlink", side_effect=refuse):
-            code, _, err = self.shim("q", ".", "--ai-run-dir", str(run_dir))
+        holder = budget._acquire_lock(run_dir / BUDGET_LOCK)  # another handle holds the OS lock
+        try:
+            with mock.patch.object(budget, "LOCK_WAIT", 0.3):
+                code, _, err = self.shim("q", ".", "--ai-run-dir", str(run_dir))
+        finally:
+            budget._release_lock(holder)
         self.assertEqual(code, EXIT_FALLBACK)
         self.assertIn("reason=budget", err)
         self.assertEqual(self.records(), [])
-        self.assertGreater(calls["n"], 0)
+
+    def test_leftover_lock_file_from_a_dead_process_does_not_block(self):
+        self.activate()
+        run_dir = self.tmp / "run"
+        run_dir.mkdir()
+        (run_dir / BUDGET_LOCK).write_bytes(b"")  # a file without an OS lock on it
+        bud_used = budget.consume_search(str(run_dir))
+        self.assertEqual(bud_used, 0)
 
     # -- search policy ----------------------------------------------------------------------
 
@@ -376,6 +277,16 @@ class ShimTests(Sandbox):
         self.assertEqual(code, EXIT_FALLBACK)
         self.assertIn("reason=no_key", err)
         self.assertEqual(self.records(), [])
+
+    def test_old_budget_file_is_read_as_the_search_counter(self):
+        self.activate()
+        run_dir = self.tmp / "run"
+        run_dir.mkdir()
+        (run_dir / BUDGET_FILE).write_text(json.dumps({"limit": 3, "used": 3, "calls": [{}, {}, {}]}))
+        self.assertEqual(self.shim("q", ".", "--ai-run-dir", str(run_dir))[0], 0)  # 3/12 now
+        data = json.loads((run_dir / BUDGET_FILE).read_text())
+        self.assertEqual((data["search"]["used"], data["search"]["limit"]), (4, 12))
+        self.assertEqual(len(data["search"]["calls"]), 4)
 
     def test_budget_is_not_used_without_run_dir(self):
         self.activate()

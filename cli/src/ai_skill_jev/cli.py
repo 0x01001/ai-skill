@@ -1,6 +1,6 @@
-"""`ai auth`, `ai logout`, `ai doctor` (plan 5.2-5.4).
+"""`ai auth`, `ai logout`, `ai doctor`, `ai decide` (plan 3, 5.2-5.4).
 
-The agent never runs `ai auth` or `ai logout`; it only runs `ai doctor --json` and `jg`.
+The agent never runs `ai auth` or `ai logout`; it runs `ai doctor --json`, `ai decide` and `jg`.
 """
 
 from __future__ import annotations
@@ -17,7 +17,9 @@ from typing import Callable, List, Optional
 from . import SCHEMA_VERSION, TOOL_ID, __version__
 from . import credentials as cred
 from . import engine as eng
+from . import decide as dec
 from . import menu, pathenv, provider
+from .decisions import KINDS, evaluated_kinds
 from .jg_runner import cleanup_orphans, jg_version
 
 EXIT_OK = 0
@@ -62,6 +64,8 @@ class Deps:
     npm_prefix: Callable[[dict], Optional[str]] = eng.npm_global_prefix  # called only for an npm `jg`
     # Arrow-key picker; returns None to fall back to the numbered prompt. Only main() turns it on.
     select: Optional[Callable[[str, List[str], int], Optional[int]]] = None
+    stdin: object = field(default_factory=lambda: sys.stdin)
+    decide_kw: dict = field(default_factory=dict)  # Runner overrides (tests: post, clock, deadlines)
 
     def say(self, text: str = "") -> None:
         print(text, file=self.out)
@@ -436,6 +440,17 @@ def doctor_report(deps: Deps) -> dict:
     if meta and meta.get("pending_secret_delete"):
         hints.append("An old key is still in the secret store; run `ai logout` (or `ai auth` again) to retry.")
     ready = active and reason is None
+    # `decide` needs only a key (no engine, no PATH): it is gated apart from `state` (plan 3, F3).
+    decide_reason = "no_cli" if reason == "no_cli" else (None if active else "no_key")
+    kinds = evaluated_kinds(meta.get("provider"), meta.get("endpoint_host"), meta.get("model")) if active else []
+    if active and not kinds:
+        if meta.get("provider") == "custom":
+            hints.append("`ai decide` runs, but no kind has been evaluated on a custom endpoint, so the skills "
+                         "call none of them automatically.")
+        else:
+            hints.append(f"`ai decide` runs, but model {meta.get('model')} has no evaluated kind, so the skills "
+                         "call none of them automatically. Run `ai auth` again to pick an evaluated model "
+                         "once one is listed.")
     return {
         "tool": TOOL_ID,
         "version": __version__,
@@ -453,6 +468,9 @@ def doctor_report(deps: Deps) -> dict:
         "engine_path": state.engine_path,
         "engine_private": state.engine_private,
         "jevgrep": state.jevgrep,
+        "decide": "off" if decide_reason else "ready",
+        "decide_reason": decide_reason,
+        "kinds": kinds,
         "hints": hints,
     }
 
@@ -474,11 +492,37 @@ def cmd_doctor(deps: Deps, as_json: bool) -> int:
     else:
         deps.say("engine: missing")
     deps.say(f"jevgrep: {report['jevgrep']}")
+    deps.say(f"decide: {report['decide']}" + (f" (reason={report['decide_reason']})" if report["decide_reason"] else "")
+             + (f"  kinds: {', '.join(report['kinds'])}" if report["kinds"] else "  kinds: none evaluated"))
     for hint in report["hints"]:
         deps.say(f"  hint: {hint}")
     if report["reason"] == "no_key":
         deps.say("  Not configured: the skills run their normal workflow. Run `ai auth` in a terminal to enable Jev.")
     return EXIT_OK
+
+
+# --------------------------------------------------------------------------- ai decide
+
+def cmd_decide(deps: Deps, kind: str, source: str, run_dir: Optional[str]) -> int:
+    if source == "-":
+        text = deps.stdin.read()
+    else:
+        try:
+            with open(source, "r", encoding="utf-8") as handle:
+                text = handle.read()
+        except (OSError, UnicodeDecodeError) as exc:
+            out = dec.gate_output(kind, "bad_input")
+            out.update(status="bad_input", detail={"error": f"cannot read --input ({exc.__class__.__name__})"})
+            deps.say(json.dumps(out))
+            return dec.EXIT_BAD_INPUT
+    if run_dir is not None and not os.path.isabs(run_dir):
+        out = dec.gate_output(kind, "bad_input")
+        out.update(status="bad_input", detail={"error": "--ai-run-dir must be an absolute path"})
+        deps.say(json.dumps(out))
+        return dec.EXIT_BAD_INPUT
+    code, line = dec.run_decide(kind, text, run_dir, deps.env, deps.store_by_name, **deps.decide_kw)
+    deps.say(line)
+    return code
 
 
 # --------------------------------------------------------------------------- entry point
@@ -500,6 +544,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("logout", help="disable Jev and delete the key (jg stays on the shim)")
     doctor = sub.add_parser("doctor", help="show the Jev state (no network, no secret store access)")
     doctor.add_argument("--json", action="store_true", help="machine-readable output for the skills")
+    decide = sub.add_parser("decide", help="ask Jev System One one workflow question (one JSON line out)")
+    decide.add_argument("kind", choices=sorted(KINDS))
+    decide.add_argument("--input", default="-", help="JSON input file, or - for stdin (default)")
+    decide.add_argument("--ai-run-dir", dest="ai_run_dir", default=None,
+                        help="absolute run dir: shares the run budget (jev-budget.json)")
     return parser
 
 
@@ -511,6 +560,8 @@ def main(argv: Optional[List[str]] = None, deps: Optional[Deps] = None) -> int:
         return cmd_auth(deps)
     if args.command == "logout":
         return cmd_logout(deps)
+    if args.command == "decide":
+        return cmd_decide(deps, args.kind, args.input, args.ai_run_dir)
     return cmd_doctor(deps, args.json)
 
 
