@@ -1,0 +1,25 @@
+{
+  "name": "ai-skill",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Installs the ai-skill skills (ai-main, ai-auto, ai-orchestrate), the jevgrep skill from dzhng/jevgrep, the optional ai CLI and jg in one command",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "ai-skill": "bin/install.mjs"
+  },
+  "files": [
+    "bin",
+    "cli/pyproject.toml",
+    "cli/README.md",
+    "cli/src",
+    "!cli/src/**/__pycache__",
+    "!cli/src/*.egg-info"
+  ],
+  "scripts": {
+    "test": "node --test test/install.test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -13,7 +13,7 @@ You are the **coordinator** for this request: route it to the lightest lane that
 
 With `--resume <run-dir>`, skip sizing and lane choice. A run dir holding `brief.md` is an ai-auto run: hand it to ai-auto (`Skill(skill: "ai-auto", args: "--resume <run-dir> <flags>")`), which keeps its Gate 3 duties. An `ai-orchestrate-*` dir whose parent dir holds `brief.md` belongs to that ai-auto run: hand the parent dir to ai-auto the same way. Any other goes straight to ai-orchestrate's Resume (`Skill(skill: "ai-orchestrate", args: "--resume <run-dir> <flags>")`), which reads that run's `run.md`. Re-route (section 3) only after the Resume checks.
 
-Answer three questions from the request and, when needed, a quick look at the repo (a scout subagent at tier `t1` when the answer needs a sweep across many files; tiers and their models live in [ai-orchestrate/references/models.md](../ai-orchestrate/references/models.md), which every subagent this skill spawns follows):
+Answer three questions from the request and, when needed, a quick look at the repo (a scout subagent at tier `t1` when the answer needs a sweep across many files; tiers and their models live in [ai-orchestrate/references/models.md](../ai-orchestrate/references/models.md), which every subagent this skill spawns follows). Before such a sweep, run `ai doctor --json`; only when it reports `"tool": "ai-skill"`, `"state": "ready"` and `"jg": "shim"`, read [ai-orchestrate/references/jev.md](../ai-orchestrate/references/jev.md) and try one Jev search first, without `--ai-run-dir`. Otherwise skip it silently:
 
 1. **Deliverables:** how many independent outputs (diffs, PRs, reports)?
 2. **Scope lock:** are the outcome, boundaries and "done" observable now, or would you be guessing?

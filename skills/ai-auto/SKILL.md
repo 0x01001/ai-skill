@@ -38,6 +38,7 @@ Inventory, with no side effects, everything the brief depends on:
 - Remote, base branch and its protection (`gh api repos/{owner}/{repo}/branches/<base>/protection`); working tree state, since worktrees see only committed `HEAD`.
 - Tracker: issue access and the labels `in progress`, `in review`, `done`, `shipped`, `ai-handle`. Creating missing labels needs to be an authorized effect.
 - Host headroom: free disk and RAM for parallel worktrees and builds.
+- Optional Jev discovery: `ai doctor --json` (no side effects). Record the result in Constraints as `Jev: ready` or `Jev: off (<reason>)`. It is never a missing prerequisite: do not list it, ask for a key or suggest setup; the run works the same without it ([jev.md](../ai-orchestrate/references/jev.md)).
 
 List only what is missing, in one message. Each item: what it is, why the run needs it, where the run will look for it, how to check it is ready. Secrets go into the environment or a secret store the user controls, never into the chat. Decide reversible implementation choices yourself and add them to Defaults. After the user's reply, re-check every item without side effects and record each skipped item in the brief with its consequence.
 

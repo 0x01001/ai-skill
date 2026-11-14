@@ -1,0 +1,11 @@
+# Skills installed into this checkout by `npx skills add` (jevgrep comes from upstream, never vendored)
+skills-lock.json
+.agents/skills/
+.claude/skills/
+
+# Python CLI (cli/)
+__pycache__/
+*.egg-info/
+build/
+dist/
+.venv/
