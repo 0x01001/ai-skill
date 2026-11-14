@@ -3,20 +3,25 @@
 //
 // Steps:
 //   1. `npx skills add 0x01001/ai-skill` (required) and `npx skills add dzhng/jevgrep` (optional).
-//   2. Jev setup, best effort: the `ai` CLI + `jg` shim (pipx, from this package's own cli/) and the
-//      real `jg` engine (`npm install --global @dzhng/jevgrep@latest`). A failure here only prints a
-//      warning with the manual command: the skills work without Jev.
+//   2. Jev setup, best effort: the `ai` CLI + `jg` shim (pipx, from this package's own cli/) and
+//      ai-skill's own `jg` engine (`npm install --prefix <engine dir> @dzhng/jevgrep@latest`, outside
+//      PATH, so nothing can shadow the shim). A global `@dzhng/jevgrep` left by an older install is
+//      then removed: it would hide the shim on PATH and is no longer used. A failure here only
+//      prints a warning with the manual command: the skills work without Jev.
 // Jev stays off until the user runs `ai auth` and enters a key.
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join, posix, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const SOURCES = [
   { label: "ai-skill", args: ["0x01001/ai-skill", "--skill", "*"] },
   { label: "jevgrep", args: ["dzhng/jevgrep", "--skill", "jevgrep"], optional: true },
 ];
-export const JG_PACKAGE = "@dzhng/jevgrep@latest";
+export const ENGINE_PACKAGE = "@dzhng/jevgrep";
+export const JG_PACKAGE = `${ENGINE_PACKAGE}@latest`;
+export const ENGINE_DIR_ENV = "AI_SKILL_ENGINE_DIR";
 export const CLI_GIT_URL = "git+https://github.com/0x01001/ai-skill#subdirectory=cli";
 export const CLI_PACKAGE = "ai-skill-jev"; // [project] name in cli/pyproject.toml
 export const LAUNCHERS = ["ai", "jg"]; // its console scripts
@@ -29,7 +34,9 @@ export const HELP = `Usage: npx -y github:0x01001/ai-skill [options]
 Installs, in one go:
   - the skills ai-main, ai-auto, ai-orchestrate (0x01001/ai-skill) and jevgrep (dzhng/jevgrep)
   - the \`ai\` CLI with its \`jg\` shim (pipx; Python >= 3.9, pipx itself is installed if missing)
-  - the jg engine: npm install --global ${JG_PACKAGE} (Node >= ${MIN_NODE_FOR_JG})
+  - ai-skill's own jg engine: npm install --prefix <engine dir> ${JG_PACKAGE} (Node >= ${MIN_NODE_FOR_JG}),
+    outside PATH (Windows: %LOCALAPPDATA%\\ai-skill\\engine, else ~/.local/share/ai-skill/engine).
+    A global ${ENGINE_PACKAGE} from an older install is removed: it would hide the shim.
 Then run \`ai auth\` in a new terminal and enter your Jev key. Without a key Jev stays off.
 
 Every option except the ones below is passed to both \`npx skills add\` runs
@@ -191,25 +198,66 @@ function installCli(deps) {
   return { binDir, problem: pathOk ? null : { what: "PATH", why: "pipx ensurepath failed", manual: "pipx ensurepath" } };
 }
 
+// Same rule as cli/src/ai_skill_jev/engine.py `engine_dir`; null when it cannot be computed.
+export function engineDir(deps) {
+  const env = deps.env ?? {};
+  const p = deps.platform === "win32" ? win32 : posix;
+  const abs = (v) => (v && p.isAbsolute(v) ? v : null);
+  const override = abs(env[ENGINE_DIR_ENV]);
+  if (override) return override;
+  if (deps.platform === "win32") {
+    const local = abs(env.LOCALAPPDATA);
+    return local ? p.join(local, "ai-skill", "engine") : null;
+  }
+  const data = abs(env.XDG_DATA_HOME) ?? (deps.home ? p.join(deps.home, ".local", "share") : null);
+  return data ? p.join(data, "ai-skill", "engine") : null;
+}
+
 function installJg(deps) {
-  const manual = `npm install --global ${JG_PACKAGE}`;
+  const dir = engineDir(deps);
+  const manual = `npm install --prefix "${dir ?? "<engine dir>"}" ${JG_PACKAGE}`;
   const major = Number(String(deps.nodeVersion).split(".")[0]);
   if (!(major >= MIN_NODE_FOR_JG)) {
     return { what: "jg", why: `Node >= ${MIN_NODE_FOR_JG} needed (this is ${deps.nodeVersion})`, manual: `upgrade Node, then: ${manual}` };
   }
+  if (!dir) {
+    return { what: "jg", why: "the engine dir cannot be found (LOCALAPPDATA / HOME not set)", manual };
+  }
   const npm = npmCli(deps);
-  const args = ["install", "--global", JG_PACKAGE];
+  const args = ["install", "--prefix", dir, "--no-audit", "--no-fund", JG_PACKAGE];
   deps.log(`\n> ${show(npm, args)}`);
   return ok(exec(deps, npm, args)) ? null : { what: "jg", why: "npm install failed", manual };
+}
+
+// A global @dzhng/jevgrep (installed by ai-skill < 1.0.0, or by the jevgrep skill) puts an npm `jg`
+// on PATH that can hide the shim; when it sits in the machine PATH only an admin could reorder it.
+// ai-skill no longer uses it, so it is removed once the shim and the private engine are in place.
+function removeGlobalJg(deps) {
+  const npm = npmCli(deps);
+  const list = exec(deps, npm, ["ls", "--global", "--depth=0", "--json", ENGINE_PACKAGE], { capture: true });
+  let installed = false;
+  try {
+    installed = Boolean(JSON.parse(String(list.stdout || "{}")).dependencies?.[ENGINE_PACKAGE]);
+  } catch {
+    return null; // cannot tell: leave it; `ai doctor` reports a shadowed shim with the fix
+  }
+  if (!installed) return null;
+  const args = ["uninstall", "--global", ENGINE_PACKAGE];
+  deps.log(`\nRemoving the global ${ENGINE_PACKAGE}: ai-skill runs its own engine, and the global \`jg\` would hide the shim.`);
+  deps.log(`> ${show(npm, args)}`);
+  return ok(exec(deps, npm, args)) ? null
+    : { what: "global jg", why: "npm uninstall failed", manual: `npm uninstall --global ${ENGINE_PACKAGE}` };
 }
 
 export function setupJev(deps) {
   deps.log("\n== Jev (optional): ai CLI + jg. Jev stays off until you run `ai auth`. ==");
   const cli = installCli(deps);
   const jgProblem = installJg(deps);
-  const problems = [cli.problem, jgProblem].filter(Boolean);
-  const cliInstalled = !cli.problem || cli.problem.what === "PATH";
-  return { cliInstalled, binDir: cli.binDir || "", problems };
+  const cliOk = !cli.problem || cli.problem.what === "PATH";
+  // Only once both are in place: without the shim, the global jg is what the jevgrep skill uses.
+  const cleanupProblem = cliOk && !jgProblem ? removeGlobalJg(deps) : null;
+  const problems = [cli.problem, jgProblem, cleanupProblem].filter(Boolean);
+  return { cliInstalled: cliOk, binDir: cli.binDir || "", problems };
 }
 
 // ----------------------------------------------------------------------------- main
@@ -283,6 +331,7 @@ export function realDeps() {
     platform: process.platform,
     execPath: process.execPath,
     nodeVersion: process.versions.node,
+    home: homedir(),
     exists: existsSync,
     cliDir: resolve(dirname(fileURLToPath(import.meta.url)), "..", "cli"),
   };

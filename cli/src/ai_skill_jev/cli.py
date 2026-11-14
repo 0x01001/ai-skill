@@ -14,10 +14,11 @@ import warnings
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
-from . import JG_INSTALL_COMMAND, SCHEMA_VERSION, TOOL_ID, __version__
+from . import SCHEMA_VERSION, TOOL_ID, __version__
 from . import credentials as cred
+from . import engine as eng
 from . import menu, pathenv, provider
-from .jg_runner import cleanup_orphans, jg_command, jg_version
+from .jg_runner import cleanup_orphans, jg_version
 
 EXIT_OK = 0
 EXIT_FAIL = 1
@@ -64,10 +65,10 @@ class Deps:
     def say(self, text: str = "") -> None:
         print(text, file=self.out)
 
-    def version_of(self, real: str) -> Optional[str]:
+    def version_of(self, engine: eng.Engine) -> Optional[str]:
         if self.jg_version is not None:
-            return self.jg_version(real)
-        return jg_version(jg_command(real, self.env), self.env)
+            return self.jg_version(engine.path)
+        return jg_version(engine.cmd, self.env)
 
 
 # --------------------------------------------------------------------------- jg / PATH state
@@ -76,24 +77,43 @@ class Deps:
 class JgState:
     jg: str                    # shim | shadowed | missing
     jevgrep: str               # ready | shadowed | jg missing | not configured
-    jg_path: Optional[str]
-    jg_version: Optional[str]
+    jg_path: Optional[str]     # what `jg` resolves to on PATH
+    jg_version: Optional[str]  # version of the engine the shim runs
+    engine_path: Optional[str]
+    engine_private: bool
     hints: List[str]
+
+
+def shadow_hint(first: Optional[str], engine: Optional[eng.Engine], env) -> str:
+    """How to make `jg` resolve to the shim, for the `jg` that wins on PATH today."""
+    if first is None:
+        return ("The ai-skill `jg` shim is not on PATH; run `pipx ensurepath`, then open a new terminal "
+                "(and restart Claude Code).")
+    if eng.is_npm_package_jg(first):
+        steps = ("" if engine is not None and engine.private
+                 else f"install ai-skill's own engine ({eng.install_command(env)}), then ")
+        return (f"`jg` on PATH is a global npm copy ({first}) that hides the ai-skill shim. ai-skill runs its "
+                f"own engine, so {steps}remove that copy: {eng.UNINSTALL_GLOBAL_COMMAND}, then open a new terminal.")
+    return (f"`jg` on PATH ({first}) is not the ai-skill shim; run `ai auth` again (it fixes the user PATH) "
+            "or put the shim dir first in PATH, then open a new terminal.")
 
 
 def jg_state(deps: Deps, active: bool) -> JgState:
     lookup = pathenv.lookup_jg(deps.env)
-    version = deps.version_of(lookup.real) if lookup.real else None
+    engine = eng.find_engine(deps.env)
+    version = deps.version_of(engine) if engine else None  # reported, never gated
     hints = []
-    if lookup.real is None:
+    if engine is None:
         jg = "missing"
-        hints.append(f"Install the real jg: {JG_INSTALL_COMMAND}")
-    elif not lookup.first_is_shim:  # any jg version is fine; `version` is reported, never gated
+        hints.append(f"Install the jg engine: {eng.install_command(deps.env)}")
+    elif not lookup.first_is_shim:
         jg = "shadowed"
-        hints.append("`jg` on PATH is the npm one, not the ai-skill shim; run `ai auth` again "
-                     "(it fixes the user PATH) or put the shim dir first in PATH, then open a new shell.")
+        hints.append(shadow_hint(lookup.first, engine, deps.env))
     else:
         jg = "shim"
+        if not engine.private:
+            hints.append(f"The shim uses the jg on PATH ({engine.path}). Install ai-skill's own engine so a "
+                         f"global npm change cannot break or bypass it: {eng.install_command(deps.env)}")
     if not active:
         jevgrep = "not configured"
     elif jg == "missing":
@@ -102,7 +122,8 @@ def jg_state(deps: Deps, active: bool) -> JgState:
         jevgrep = "shadowed"
     else:
         jevgrep = "ready"
-    return JgState(jg, jevgrep, lookup.first, version, hints)
+    return JgState(jg, jevgrep, lookup.first, version, engine.path if engine else None,
+                   bool(engine and engine.private), hints)
 
 
 def fix_path(deps: Deps) -> tuple:
@@ -131,8 +152,12 @@ def fix_path(deps: Deps) -> tuple:
         return "ready", [f"User PATH updated: {shim_dir} now comes first. "
                          "Open a new terminal (and restart Claude Code) to pick it up."]
     if plan.status == "shadowed_machine":
+        blocking = pathenv.jg_in_dir(plan.blocking_dir, deps.env)
+        if blocking and eng.is_npm_package_jg(blocking[0]):
+            # No admin needed: ai-skill does not use the global copy, so it can simply go.
+            return "shadowed", [shadow_hint(blocking[0], eng.find_engine(deps.env), deps.env)]
         return "shadowed", [
-            f"The npm jg in the machine PATH ({plan.blocking_dir}) comes before every user PATH entry. "
+            f"The jg in the machine PATH ({plan.blocking_dir}) comes before every user PATH entry. "
             f"Move {shim_dir} ahead of it in the system PATH (needs admin), then open a new shell."]
     return "shadowed", ["The jg shim was not found next to `ai`; reinstall with pipx."]
 
@@ -312,13 +337,17 @@ def _auth_steps(deps: Deps, meta: Optional[dict]) -> int:
     deps.say(f"Saved: {profile['provider']} ({profile['endpoint_host']}), model {profile['model']}, "
              f"key in {store.backend_name}.")
 
-    lookup = pathenv.lookup_jg(deps.env)                                # step 9
-    if lookup.real is None:
-        deps.say(f"Engine: jg not found. Install it yourself: {JG_INSTALL_COMMAND}")
+    engine = eng.find_engine(deps.env)                                  # step 9
+    if engine is None:
+        deps.say(f"Engine: jg not found. Install it yourself: {eng.install_command(deps.env)}")
         deps.say("State: enabled, engine unavailable. Skills keep the normal workflow until jg is installed.")
     else:
-        version = deps.version_of(lookup.real)
-        deps.say(f"Engine: jg {version or '(version unknown)'} at {lookup.real}.")
+        version = deps.version_of(engine)
+        where = "ai-skill's own copy" if engine.private else "from PATH"
+        deps.say(f"Engine: jg {version or '(version unknown)'} at {engine.path} ({where}).")
+        if not engine.private:
+            deps.say("Tip: install ai-skill's own engine so a global npm change cannot break it: "
+                     f"{eng.install_command(deps.env)}")
 
     status, messages = fix_path(deps)                                   # step 10
     for line in messages:
@@ -412,6 +441,8 @@ def doctor_report(deps: Deps) -> dict:
         "jg": state.jg,
         "jg_path": state.jg_path,
         "jg_version": state.jg_version,
+        "engine_path": state.engine_path,
+        "engine_private": state.engine_private,
         "jevgrep": state.jevgrep,
         "hints": hints,
     }
@@ -427,7 +458,12 @@ def cmd_doctor(deps: Deps, as_json: bool) -> int:
     if report["provider"]:
         deps.say(f"  provider: {report['provider']}  host: {report['endpoint_host']}  model: {report['model']}")
         deps.say(f"  secret store: {report['secret_backend']}")
-    deps.say(f"jg: {report['jg']}" + (f" ({report['jg_version']}, {report['jg_path']})" if report["jg_path"] else ""))
+    deps.say(f"jg: {report['jg']}" + (f" ({report['jg_path']})" if report["jg_path"] else ""))
+    if report["engine_path"]:
+        where = "ai-skill's own copy" if report["engine_private"] else "from PATH"
+        deps.say(f"engine: jg {report['jg_version'] or '(version unknown)'} ({where}, {report['engine_path']})")
+    else:
+        deps.say("engine: missing")
     deps.say(f"jevgrep: {report['jevgrep']}")
     for hint in report["hints"]:
         deps.say(f"  hint: {hint}")

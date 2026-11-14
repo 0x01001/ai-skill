@@ -5,13 +5,19 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CLI_PACKAGE, JG_PACKAGE, main, parseArgs } from "../bin/lib.mjs";
+import { CLI_PACKAGE, ENGINE_PACKAGE, JG_PACKAGE, engineDir, main, parseArgs } from "../bin/lib.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CLI_DIR = "/pkg/cli";
 const EXEC = "/node/bin/node";
 const NPM_CLI = "/node/lib/npm/bin/npm-cli.js";
 const LINUX_BIN = "/home/u/.local/bin";
+const LINUX_ENGINE = "/home/u/.local/share/ai-skill/engine";
+const WIN_LOCAL = "C:\\Users\\u\\AppData\\Local";
+// ai-skill's own engine: a prefix install outside PATH, never `--global`.
+const JG_INSTALL = `install --prefix ${LINUX_ENGINE} --no-audit --no-fund ${JG_PACKAGE}`;
+const GLOBAL_LS = `ls --global --depth=0 --json ${ENGINE_PACKAGE}`;
+const GLOBAL_PRESENT = { status: 0, stdout: JSON.stringify({ dependencies: { [ENGINE_PACKAGE]: { version: "0.8.5" } } }) };
 
 // `pipx list --json` output: venv name -> the apps its packages expose.
 function pipxList(venvs) {
@@ -60,6 +66,7 @@ function fakeDeps({ responses = {}, platform = "linux", nodeVersion = "23.11.1",
       platform,
       execPath: EXEC,
       nodeVersion,
+      home: "/home/u",
       exists: exists ?? ((p) => p.endsWith("pyproject.toml")),
       cliDir: CLI_DIR,
     },
@@ -67,7 +74,7 @@ function fakeDeps({ responses = {}, platform = "linux", nodeVersion = "23.11.1",
 }
 
 const lines = (calls) => calls.map((c) => c.line);
-const installs = (calls) => lines(calls).filter((l) => !/--version$|^\S+( -3)? -c |environment --value|list --json$/.test(l));
+const installs = (calls) => lines(calls).filter((l) => !/--version$|^\S+( -3)? -c |environment --value|list --json$| ls --global /.test(l));
 const text = (arr) => arr.join("\n");
 
 test("default: skills, jevgrep, ai CLI from this package, jg@latest, then only `ai auth` is left", () => {
@@ -78,7 +85,7 @@ test("default: skills, jevgrep, ai CLI from this package, jg@latest, then only `
     `node ${NPM_CLI} exec --yes -- skills add dzhng/jevgrep --skill jevgrep -a claude-code -y -g`,
     `python3 -m pipx install ${CLI_DIR}`,
     "python3 -m pipx ensurepath",
-    `node ${NPM_CLI} install --global @dzhng/jevgrep@latest`, // never pinned: upstream owns updates
+    `node ${NPM_CLI} ${JG_INSTALL}`, // never pinned: upstream owns updates
   ]);
   assert.match(text(out), /Next: open a new terminal and run `ai auth`/);
   assert.match(text(out), /[\\/]home[\\/]u[\\/]\.local[\\/]bin[\\/]ai" auth/);
@@ -117,7 +124,7 @@ test("pipx cannot be installed: warning with the manual command, jg still instal
   });
   assert.equal(main(["-g"], deps), 0);
   assert.ok(!lines(calls).some((l) => l.includes("pipx install")));
-  assert.ok(lines(calls).includes(`node ${NPM_CLI} install --global ${JG_PACKAGE}`));
+  assert.ok(lines(calls).includes(`node ${NPM_CLI} ${JG_INSTALL}`));
   assert.match(text(err), /Jev setup incomplete/);
   assert.match(text(err), /ai CLI: pipx could not be installed.*pipx install "git\+https:\/\/github.com\/0x01001\/ai-skill#subdirectory=cli"/);
   assert.doesNotMatch(text(out), /Next: open a new terminal/);
@@ -153,7 +160,7 @@ test("`ai` or `jg` from another pipx package: never overwritten, warning, jg eng
     assert.ok(!lines(calls).some((l) => l.includes("pipx install") || l.includes("ensurepath")), owner);
     assert.match(text(err), new RegExp(`ai CLI: not overwriting other commands: .*pipx package ${owner}`));
     assert.match(text(err), /remove or rename those, then: pipx install "git\+/);
-    assert.ok(lines(calls).includes(`node ${NPM_CLI} install --global ${JG_PACKAGE}`));
+    assert.ok(lines(calls).includes(`node ${NPM_CLI} ${JG_INSTALL}`));
     assert.doesNotMatch(text(out), /Next: open a new terminal/);
   }
 });
@@ -227,7 +234,7 @@ test("Node older than 22: jg is skipped with the reason, the CLI is still instal
 test("npm install of jg fails: warning with the manual command, exit 0", () => {
   const { deps, err } = fakeDeps({ responses: { [`node ${NPM_CLI} install`]: { status: 1 } } });
   assert.equal(main(["-g"], deps), 0);
-  assert.match(text(err), new RegExp(`jg: npm install failed\\. Run: npm install --global ${JG_PACKAGE}`));
+  assert.match(text(err), new RegExp(`jg: npm install failed\\. Run: npm install --prefix "${LINUX_ENGINE}" ${JG_PACKAGE}`));
 });
 
 test("--no-jev skips the jevgrep skill, the CLI and jg, and is not passed to skills add", () => {
@@ -274,11 +281,12 @@ test("cli/ missing from the package: warning with the git install command", () =
 });
 
 test("Windows without npm_execpath: py -3 first, npm and npx through the shell", () => {
-  const { deps, calls } = fakeDeps({ platform: "win32", env: {} });
+  const { deps, calls } = fakeDeps({ platform: "win32", env: { LOCALAPPDATA: WIN_LOCAL } });
   assert.equal(main(["-g"], deps), 0);
   const byLine = Object.fromEntries(calls.map((c) => [c.line, c.opts]));
   assert.equal(byLine["npx --yes skills add 0x01001/ai-skill --skill * -g"].shell, true);
-  assert.equal(byLine[`npm install --global ${JG_PACKAGE}`].shell, true);
+  const engine = `${WIN_LOCAL}\\ai-skill\\engine`;
+  assert.equal(byLine[`npm install --prefix ${engine} --no-audit --no-fund ${JG_PACKAGE}`].shell, true);
   assert.equal(byLine[`py -3 -m pipx install ${CLI_DIR}`].shell, false);
   assert.ok(!lines(calls).some((l) => l.startsWith("python")), "py -3 answered first");
 });
@@ -288,7 +296,7 @@ test("run through npx (npx-cli.js): jg is installed with the sibling npm-cli.js"
   const { deps, calls } = fakeDeps({ env: { npm_execpath: npx }, exists: (p) => /(pyproject\.toml|npm-cli\.js)$/.test(p) });
   assert.equal(main(["-g"], deps), 0);
   assert.ok(lines(calls).includes(`node ${npx} --yes skills add 0x01001/ai-skill --skill * -g`));
-  assert.ok(lines(calls).includes(`node ${join(dirname(npx), "npm-cli.js")} install --global ${JG_PACKAGE}`));
+  assert.ok(lines(calls).includes(`node ${join(dirname(npx), "npm-cli.js")} ${JG_INSTALL}`));
 });
 
 test("--skill is rejected; help names the Jev flags", () => {
@@ -314,4 +322,62 @@ test("the npm package ships cli/ for pipx, without tests or caches", () => {
   assert.ok(!files.some((f) => f.startsWith("cli/tests/") || f.includes("__pycache__") || f.includes(".egg-info")),
     files.filter((f) => f.startsWith("cli/")).join(", "));
   assert.ok(!files.some((f) => f.startsWith("test/") || f.startsWith("plan/")));
+});
+
+// ----------------------------------------------------------------------------- private engine (1.0.0)
+
+test("engineDir matches cli/src/ai_skill_jev/engine.py", () => {
+  assert.equal(engineDir({ platform: "linux", env: {}, home: "/home/u" }), LINUX_ENGINE);
+  assert.equal(engineDir({ platform: "linux", env: { XDG_DATA_HOME: "/data" }, home: "/home/u" }), "/data/ai-skill/engine");
+  assert.equal(engineDir({ platform: "win32", env: { LOCALAPPDATA: WIN_LOCAL } }), `${WIN_LOCAL}\\ai-skill\\engine`);
+  assert.equal(engineDir({ platform: "win32", env: {} }), null);
+  assert.equal(engineDir({ platform: "linux", env: { AI_SKILL_ENGINE_DIR: "/opt/e", XDG_DATA_HOME: "/data" } }), "/opt/e");
+  assert.equal(engineDir({ platform: "linux", env: { AI_SKILL_ENGINE_DIR: "rel" }, home: "/home/u" }), LINUX_ENGINE);
+});
+
+test("a global @dzhng/jevgrep from an older install is removed after the shim and the engine are in place", () => {
+  const { deps, calls, out, err } = fakeDeps({ responses: { [`node ${NPM_CLI} ${GLOBAL_LS}`]: GLOBAL_PRESENT } });
+  assert.equal(main(["-g"], deps), 0);
+  const l = lines(calls);
+  const uninstall = `node ${NPM_CLI} uninstall --global ${ENGINE_PACKAGE}`;
+  assert.ok(l.includes(uninstall), l.join("\n"));
+  assert.ok(l.indexOf(`node ${NPM_CLI} ${JG_INSTALL}`) < l.indexOf(uninstall));
+  assert.ok(l.indexOf(`python3 -m pipx install ${CLI_DIR}`) < l.indexOf(uninstall));
+  assert.match(text(out), /would hide the shim/);
+  assert.equal(err.length, 0);
+});
+
+test("no global @dzhng/jevgrep: nothing is uninstalled", () => {
+  for (const stdout of ["{}", "", "not json"]) {
+    const { deps, calls } = fakeDeps({ responses: { [`node ${NPM_CLI} ${GLOBAL_LS}`]: { status: 1, stdout } } });
+    assert.equal(main(["-g"], deps), 0);
+    assert.ok(!lines(calls).some((c) => c.includes("uninstall")), stdout);
+  }
+});
+
+test("the global jg is kept when the private engine or the CLI could not be installed", () => {
+  for (const responses of [
+    { [`node ${NPM_CLI} ${JG_INSTALL}`]: { status: 1 } },
+    { "python3 -m pipx install": { status: 1 } },
+  ]) {
+    const { deps, calls } = fakeDeps({ responses: { ...responses, [`node ${NPM_CLI} ${GLOBAL_LS}`]: GLOBAL_PRESENT } });
+    assert.equal(main(["-g"], deps), 0);
+    assert.ok(!lines(calls).some((c) => c.includes("uninstall")), JSON.stringify(responses));
+  }
+});
+
+test("the global jg cannot be removed: warning with the manual command, exit 0", () => {
+  const { deps, err } = fakeDeps({ responses: {
+    [`node ${NPM_CLI} ${GLOBAL_LS}`]: GLOBAL_PRESENT,
+    [`node ${NPM_CLI} uninstall --global ${ENGINE_PACKAGE}`]: { status: 1 },
+  } });
+  assert.equal(main(["-g"], deps), 0);
+  assert.match(text(err), /global jg: npm uninstall failed\. Run: npm uninstall --global @dzhng\/jevgrep/);
+});
+
+test("Windows without LOCALAPPDATA: the engine is skipped with the reason", () => {
+  const { deps, calls, err } = fakeDeps({ platform: "win32", env: {} });
+  assert.equal(main(["-g"], deps), 0);
+  assert.ok(!lines(calls).some((l) => l.includes(JG_PACKAGE)));
+  assert.match(text(err), /jg: the engine dir cannot be found/);
 });

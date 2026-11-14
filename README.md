@@ -24,7 +24,7 @@ One command installs everything:
 
 1. the 3 skills plus [`jevgrep`](https://github.com/dzhng/jevgrep) from its upstream repo (`npx skills add` takes one source and has no dependency field, so the installer runs it twice and passes your flags to both runs);
 2. the `ai` CLI and its `jg` shim, with pipx, from the same package copy (Python >= 3.9; pipx is installed with `python -m pip install --user pipx` when missing, then `pipx ensurepath`; an `ai` or `jg` that another tool put in the pipx bin dir is never overwritten: the installer skips the CLI and says what to remove);
-3. the `jg` engine: `npm install --global @dzhng/jevgrep@latest` (Node >= 22).
+3. ai-skill's own `jg` engine: `npm install --prefix <engine dir> @dzhng/jevgrep@latest` (Node >= 22), outside PATH (Windows: `%LOCALAPPDATA%\ai-skill\engine`; macOS/Linux: `~/.local/share/ai-skill/engine`; override with `AI_SKILL_ENGINE_DIR`). Nothing on PATH can then shadow the shim. Once the CLI and the engine are both in place, a global `@dzhng/jevgrep` left by an older install (or by `npm install -g`) is removed with `npm uninstall --global @dzhng/jevgrep`: ai-skill no longer uses it, and its `jg` would hide the shim.
 
 Then open a new terminal and run `ai auth` to enter your Jev key. That is the only step left; skip it and Jev stays off.
 
@@ -54,7 +54,7 @@ Equivalent manual commands:
 npx skills add 0x01001/ai-skill --skill '*' -a claude-code -y -g
 npx skills add dzhng/jevgrep --skill jevgrep -a claude-code -y -g
 pipx install "git+https://github.com/0x01001/ai-skill#subdirectory=cli" && pipx ensurepath
-npm install --global @dzhng/jevgrep@latest
+npm install --prefix "$HOME/.local/share/ai-skill/engine" @dzhng/jevgrep@latest   # Windows: "%LOCALAPPDATA%\ai-skill\engine"
 ```
 
 `ai-orchestrate` ships its own `.gitignore` (`__pycache__/`), so Python cache from `scripts/sessions.py` stays out of git in the target project.
@@ -109,11 +109,11 @@ ai doctor    # state, provider, secret store, which jg is on PATH (--json for sc
 ai logout    # disable and delete the key; jg stays on the shim, which then refuses to run
 ```
 
-From a checkout instead: `pipx install --editable ./cli`, then `npm install --global @dzhng/jevgrep@latest` (any `jg` version works; upstream jevgrep keeps it current).
+From a checkout instead: `pipx install --editable ./cli`, then the engine with the `npm install --prefix` command from [Install](#install) (any `jg` version works; rerun it to update). Without that engine the shim falls back to a non-shim `jg` on PATH, and `ai doctor` suggests installing the private one.
 
 - **Key.** Stored in the OS secret store (Windows Credential Manager, macOS Keychain, Secret Service/KWallet), bound to its provider, endpoint and model. `jev.json` holds metadata only. For each search the shim writes a temporary credentials file in a private dir, deletes it when `jg` exits, and drops any output that contains the key. Never paste the key into chat; agents never run `ai auth`.
 - **What is sent.** Entering a key turns Jev on; there is no separate consent step. Jev receives source excerpts from the repos where the agent runs discovery, minus `.env*`, keys, credentials, `*.log`, `ai/running/` and dependency dirs (a heuristic, not a guarantee). That covers every repo where the skills or `jevgrep` are installed (a global install means every repo), so choose the install scope (global or per project) to choose where Jev may run.
-- **One auth for both.** The package installs two commands, `ai` and a `jg` shim. `ai auth` puts the pipx bin dir before npm's in your user PATH (Windows: `HKCU\Environment`) so `jg` resolves to the shim. `ai logout` keeps that order on purpose: `jg` stays on the shim, so a `jg auth` login of the npm `jg` cannot send source once Jev is off. `pipx uninstall ai-skill-jev` removes the shim and `jg` falls through to npm's again. If the npm `jg` sits in the machine PATH, `ai doctor` reports `shadowed` and says what to move. On macOS/Linux, put the pipx bin dir first yourself.
+- **One auth for both.** The package installs two commands, `ai` and a `jg` shim. `ai auth` puts the pipx bin dir before npm's in your user PATH (Windows: `HKCU\Environment`) so `jg` resolves to the shim. `ai logout` keeps that order on purpose: `jg` stays on the shim, so a `jg auth` login of the npm `jg` cannot send source once Jev is off. `pipx uninstall ai-skill-jev` removes the shim (and the engine dir can then be deleted). The shim runs ai-skill's own engine, never a global npm `jg`; if a global `@dzhng/jevgrep` still shadows the shim (for example from the machine PATH, where reordering needs admin), `ai doctor` reports `shadowed` and says to run `npm uninstall --global @dzhng/jevgrep`, which needs no admin. On macOS/Linux, put the pipx bin dir first yourself.
 - **Shim.** `jg` needs a Jev key. Before `ai auth`, or after `ai logout`, the shim never runs the real `jg`: every command exits 3 with `ai-skill jev: unavailable (reason=no_key)` and callers keep the normal workflow. `jg auth` is always blocked. With a key: searches need only the key (any installed `jg` version works; a new upstream release never turns Jev off), get `--max-requests 100` (a higher value is lowered) and the exclusions, must search inside the git repo of the working directory, cannot use `--include-sensitive`/`--hidden`/`--no-ignore`/`--include-dependencies`, stop after 90 s, and fall back with exit 3 and `ai-skill jev: unavailable (reason=...)`; a search that fails with no output is a fallback too (`auth_error` when the provider rejects the key: run `ai auth` again; otherwise `provider_error`). Runs started by `ai-orchestrate`/`ai-auto` are capped at 3 searches; workers never call it. The `ai-*` skills call `jg` only after `ai doctor --json` reports `"jg": "shim"`, and never use `jg auth` credentials. Policy: [jev.md](skills/ai-orchestrate/references/jev.md).
 - **Limits.** Token savings and quality are not measured yet (plan P0.5/P4); the budget numbers are starting values. Calls through the upstream `jevgrep` skill count only against the per-search cap.
 
@@ -125,7 +125,7 @@ Tests (no network, no real key, store or PATH): `cd cli && PYTHONPATH=src python
 - `git` (worktrees) and, for issues/PRs/labels, [`gh`](https://cli.github.com/) authenticated.
 - `python3` for [`scripts/sessions.py`](skills/ai-orchestrate/scripts/sessions.py) (`status`, `last`, `usage`, `wait` on sub-sessions).
 - Optional: Codex or Orca CLI for `--cross-runtime`.
-- Optional, for Jev discovery: Python >= 3.9 and Node >= 22. The installer adds `pipx` (if missing), the `ai` CLI and `@dzhng/jevgrep` (any version).
+- Optional, for Jev discovery: Python >= 3.9 and Node >= 22. The installer adds `pipx` (if missing), the `ai` CLI and its own copy of `@dzhng/jevgrep` (any version) outside PATH.
 
 ## Repository layout
 

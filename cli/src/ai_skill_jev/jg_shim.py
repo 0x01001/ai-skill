@@ -17,11 +17,11 @@ import time
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence, Tuple
 
-from . import EXIT_FALLBACK, JG_INSTALL_COMMAND
+from . import EXIT_FALLBACK
 from .credentials import (KeyringStore, StateError, atomic_write_json, is_active,
                           load_metadata, now_iso, read_key)
-from .jg_runner import SHIM_ENV, jg_command, prepare_search_args, run_jg, split_command
-from .pathenv import lookup_jg
+from .engine import find_engine, install_command
+from .jg_runner import SHIM_ENV, prepare_search_args, run_jg, split_command
 from .provider import jg_credentials_payload
 
 RUN_DIR_FLAG = "--ai-run-dir"
@@ -163,7 +163,7 @@ def _say(err, text: str) -> None:
     _write(err, (text + "\n").encode("utf-8"))
 
 
-def _fallback_message(reason: str, detail: str = "") -> str:
+def _fallback_message(reason: str, detail: str = "", env=None) -> str:
     text = f"ai-skill jev: unavailable (reason={reason}). Use grep/read files instead."
     if reason == "policy" and detail:
         text += f"\nai-skill jev: refused: {detail}. Do not retry with other flags or roots."
@@ -172,7 +172,7 @@ def _fallback_message(reason: str, detail: str = "") -> str:
     if reason == "auth_error":
         text += "\nai-skill jev: the provider rejected the Jev key; the user runs `ai auth` again in a terminal."
     if reason == "engine_missing":
-        text += f"\nai-skill jev: jg not found; install: {JG_INSTALL_COMMAND}"
+        text += f"\nai-skill jev: jg engine not found; the user installs it with: {install_command(env)}"
     return text
 
 
@@ -182,7 +182,7 @@ def run(argv: Sequence[str], env, *, store_factory=KeyringStore.by_name, out=Non
     try:
         return _run(argv, env, store_factory, out, err)
     except Fallback as exc:
-        _say(err, _fallback_message(exc.reason, exc.detail))
+        _say(err, _fallback_message(exc.reason, exc.detail, env))
         return EXIT_FALLBACK
 
 
@@ -190,7 +190,7 @@ def _run(argv, env, store_factory, out, err) -> int:
     if env.get(SHIM_ENV) == "1":
         raise Fallback("engine_missing", "the real jg resolved back to the shim")
     args, run_dir = strip_run_dir(argv)
-    real = lookup_jg(env).real
+    engine = find_engine(env)
     try:
         meta = load_metadata(env)
     except StateError as exc:
@@ -202,9 +202,9 @@ def _run(argv, env, store_factory, out, err) -> int:
     if not is_active(meta):
         # No Jev key: jg is not used at all; the caller keeps the normal workflow.
         raise Fallback("no_key")
-    if real is None:
+    if engine is None:
         raise Fallback("engine_missing")
-    cmd = jg_command(real, env)
+    cmd = engine.cmd
 
     try:
         if info or command is None or command in NO_CREDENTIAL_COMMANDS:

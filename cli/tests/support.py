@@ -166,12 +166,14 @@ class Sandbox(unittest.TestCase):
         self.record = self.tmp / "record.jsonl"
         self.env = {k: v for k, v in os.environ.items()
                     if k.upper() not in ("TYPESAFE_API_KEY", "TYPESAFE_AI_API_KEY", "AI_SKILL_JG_SHIM",
-                                         "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "XDG_CACHE_HOME")}
+                                         "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "XDG_CACHE_HOME",
+                                         "XDG_DATA_HOME", "AI_SKILL_ENGINE_DIR")}
         self.env.update({
             "APPDATA": str(self.appdata),
             "LOCALAPPDATA": str(self.local),
             "XDG_CONFIG_HOME": str(self.appdata),
             "XDG_RUNTIME_DIR": str(self.local),
+            "XDG_DATA_HOME": str(self.local),
             "FAKE_JG_RECORD": str(self.record),
             "TYPESAFE_API_KEY": "env-key-must-not-reach-jg",
         })

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-skill-jev"
-version = "0.1.0"
+version = "1.0.0"
 description = "Optional Jev discovery for the ai-skill Claude Code skills: `ai auth`, `ai logout`, `ai doctor` and the `jg` shim."
 readme = "README.md"
 license = { text = "MIT" }
