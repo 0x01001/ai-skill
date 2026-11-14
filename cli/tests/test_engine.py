@@ -72,6 +72,7 @@ class EngineTests(Sandbox):
         self.shim_dir.mkdir()
         (self.shim_dir / SHIM_NAME).write_bytes(b"launcher for ai_skill_jev.jg_shim")
         self.out = io.StringIO()
+        self.npm_prefix = None  # what the fake `npm prefix --global` answers
 
     # -- helpers ---------------------------------------------------------------------------
 
@@ -89,13 +90,23 @@ class EngineTests(Sandbox):
             "process.exit(r.status === null ? 1 : r.status);\n", encoding="utf-8")
         return entry
 
+    def make_npm_prefix(self, name="npm-global"):
+        """An npm prefix holding @dzhng/jevgrep, laid out for this platform. Returns (bin dir, prefix):
+        Windows (`%APPDATA%\\npm`) puts the launcher in the prefix, POSIX in `<prefix>/bin`."""
+        prefix = self.tmp / name
+        if sys.platform == "win32":
+            bin_dir, modules = prefix, prefix / "node_modules"
+        else:
+            bin_dir, modules = prefix / "bin", prefix / "lib" / "node_modules"
+        bin_dir.mkdir(parents=True)
+        self.install_fake_jg(bin_dir)
+        (modules / "@dzhng" / "jevgrep").mkdir(parents=True)
+        return bin_dir, prefix
+
     def make_global_npm_jg(self):
-        """A dir laid out like `%APPDATA%\\npm`: a `jg` launcher next to node_modules/@dzhng/jevgrep."""
-        npm = self.tmp / "npm-global"
-        npm.mkdir()
-        self.install_fake_jg(npm)
-        (npm / "node_modules" / "@dzhng" / "jevgrep").mkdir(parents=True)
-        return npm
+        """The jevgrep copy in npm's current global prefix (what `npm prefix --global` reports)."""
+        bin_dir, self.npm_prefix = self.make_npm_prefix()
+        return bin_dir
 
     def activate(self):
         meta = active_metadata()
@@ -106,7 +117,8 @@ class EngineTests(Sandbox):
         return Deps(env=self.env, out=self.out, ask=lambda prompt: "1", ask_secret=lambda prompt: SENTINEL_KEY,
                     isatty=lambda: True, detect_store=lambda: self.store, store_by_name={"FakeStore": self.store}.get,
                     validate=ok_validation, user_env=lambda: user_env or FakeUserEnv(str(self.bin)),
-                    shim_dir=lambda: str(self.shim_dir), jg_version=lambda path: "0.8.5")
+                    shim_dir=lambda: str(self.shim_dir), jg_version=lambda path: "0.8.5",
+                    npm_prefix=lambda env: str(self.npm_prefix) if self.npm_prefix else None)
 
     def doctor(self):
         self.out = io.StringIO()
@@ -220,6 +232,77 @@ class EngineTests(Sandbox):
         self.assertNotIn("needs admin", text)
         self.assertIn("jevgrep: shadowed", text)
         self.assertEqual(user_env.writes, [])
+
+    # -- npm prefix: only a copy `npm uninstall --global` removes gets that advice ----------
+
+    def test_is_global_npm_jg_needs_the_current_global_prefix(self):
+        bin_dir, prefix = self.make_npm_prefix()
+        _, other = self.make_npm_prefix("other-prefix")
+        launcher = eng.find_engine(dict(self.env, PATH=str(bin_dir))).path
+        self.assertTrue(eng.is_global_npm_jg(launcher, str(prefix)))
+        self.assertFalse(eng.is_global_npm_jg(launcher, str(other)))
+        self.assertFalse(eng.is_global_npm_jg(launcher, None))
+        self.assertFalse(eng.is_global_npm_jg(str(self.shim_dir / SHIM_NAME), str(self.shim_dir)))
+
+    def test_npm_global_bin_layout(self):
+        prefix = os.path.abspath("p")
+        self.assertEqual(eng.npm_global_bin(prefix, "win32"), prefix)
+        self.assertEqual(eng.npm_global_bin(prefix, "linux"), os.path.join(prefix, "bin"))
+
+    def assert_path_hint_only(self, hint):
+        self.assertNotIn("npm uninstall", hint)
+        self.assertIn("put the shim dir first in PATH", hint)
+
+    def test_doctor_npm_copy_in_another_prefix_keeps_the_path_hint(self):
+        self.activate()
+        self.install_private_engine()
+        shadow, _ = self.make_npm_prefix("project-prefix")    # not npm's global prefix
+        _, self.npm_prefix = self.make_npm_prefix()
+        self.set_path(shadow, self.shim_dir)
+        report = self.doctor()
+        self.assertEqual(report["jg"], "shadowed")
+        self.assert_path_hint_only(" ".join(report["hints"]))
+
+    def test_doctor_local_node_modules_bin_jg_keeps_the_path_hint(self):
+        self.activate()
+        self.install_private_engine()
+        project = self.tmp / "project" / "node_modules"
+        local_bin = project / ".bin"
+        local_bin.mkdir(parents=True)
+        self.install_fake_jg(local_bin)
+        (project / "@dzhng" / "jevgrep").mkdir(parents=True)
+        _, self.npm_prefix = self.make_npm_prefix()
+        self.set_path(local_bin, self.shim_dir)
+        self.assert_path_hint_only(" ".join(self.doctor()["hints"]))
+
+    def test_doctor_npm_prefix_unknown_keeps_the_path_hint(self):
+        self.activate()
+        self.install_private_engine()
+        npm = self.make_global_npm_jg()
+        self.npm_prefix = None                                # npm missing or `npm prefix -g` failed
+        self.set_path(npm, self.shim_dir)
+        self.assert_path_hint_only(" ".join(self.doctor()["hints"]))
+
+    def test_auth_machine_path_npm_copy_in_another_prefix_needs_admin(self):
+        self.install_private_engine()
+        shadow, _ = self.make_npm_prefix("machine-prefix")
+        _, self.npm_prefix = self.make_npm_prefix()
+        self.set_path(shadow, self.shim_dir)
+        user_env = FakeUserEnv(str(self.shim_dir), machine_path=str(shadow))
+        self.assertEqual(main(["auth"], deps=self.deps(user_env)), 0, self.out.getvalue())
+        text = self.out.getvalue()
+        self.assertNotIn("npm uninstall", text)
+        self.assertIn("needs admin", text)
+
+    def test_npm_global_prefix_reads_npm(self):
+        fake = mock.Mock(returncode=0, stdout=(os.path.abspath("gp") + "\n").encode())
+        with mock.patch("shutil.which", return_value="npm"), mock.patch("subprocess.run", return_value=fake):
+            self.assertEqual(eng.npm_global_prefix({"PATH": ""}), os.path.abspath("gp"))
+        for result in (mock.Mock(returncode=1, stdout=b"x"), mock.Mock(returncode=0, stdout=b"relative")):
+            with mock.patch("shutil.which", return_value="npm"), mock.patch("subprocess.run", return_value=result):
+                self.assertIsNone(eng.npm_global_prefix({"PATH": ""}))
+        with mock.patch("shutil.which", return_value=None):
+            self.assertIsNone(eng.npm_global_prefix({"PATH": ""}))
 
     def test_auth_with_path_engine_suggests_private_install(self):
         self.set_path(self.shim_dir, self.bin)

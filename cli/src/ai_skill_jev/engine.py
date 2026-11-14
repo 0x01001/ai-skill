@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -73,6 +74,42 @@ def is_npm_package_jg(path: Optional[str]) -> bool:
         return True
     real = os.path.normcase(os.path.realpath(path))
     return os.path.normcase(package) in real
+
+
+def npm_global_prefix(env=None) -> Optional[str]:
+    """`npm prefix --global`: the only prefix `npm uninstall --global` acts on. None if npm cannot tell."""
+    env = os.environ if env is None else env
+    npm = shutil.which("npm", path=env.get("PATH"))
+    if not npm:
+        return None
+    try:
+        result = subprocess.run([npm, "prefix", "--global"], env=dict(env), stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    prefix = result.stdout.decode("utf-8", "replace").strip() if result.returncode == 0 else ""
+    return prefix if prefix and os.path.isabs(prefix) else None
+
+
+def npm_global_bin(prefix: str, platform: str = sys.platform) -> str:
+    """Where npm puts global launchers: the prefix itself on Windows, `<prefix>/bin` elsewhere."""
+    return prefix if platform == "win32" else os.path.join(prefix, "bin")
+
+
+def _same_dir(a: str, b: str) -> bool:
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def is_global_npm_jg(path: Optional[str], prefix: Optional[str], platform: str = sys.platform) -> bool:
+    """True only for an @dzhng/jevgrep launcher in the bin dir of npm's current global prefix, i.e.
+    one that `npm uninstall --global @dzhng/jevgrep` actually removes. A local `node_modules/.bin/jg`
+    or a copy under another prefix is not."""
+    if not path or not prefix or not is_npm_package_jg(path):
+        return False
+    return _same_dir(os.path.dirname(os.path.abspath(path)), npm_global_bin(prefix, platform))
 
 
 @dataclass

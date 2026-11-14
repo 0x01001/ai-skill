@@ -59,6 +59,7 @@ class Deps:
     user_env: Callable[[], Optional[pathenv.UserEnv]] = _default_user_env
     shim_dir: Callable[[], Optional[str]] = pathenv.own_shim_dir
     jg_version: Callable = None
+    npm_prefix: Callable[[dict], Optional[str]] = eng.npm_global_prefix  # called only for an npm `jg`
     # Arrow-key picker; returns None to fall back to the numbered prompt. Only main() turns it on.
     select: Optional[Callable[[str, List[str], int], Optional[int]]] = None
 
@@ -84,12 +85,20 @@ class JgState:
     hints: List[str]
 
 
-def shadow_hint(first: Optional[str], engine: Optional[eng.Engine], env) -> str:
+def is_removable_global_jg(path: Optional[str], deps: Deps) -> bool:
+    """`path` is the npm jg that `npm uninstall --global` removes (npm is asked only for an npm jg)."""
+    return eng.is_npm_package_jg(path) and eng.is_global_npm_jg(path, deps.npm_prefix(deps.env))
+
+
+def shadow_hint(first: Optional[str], engine: Optional[eng.Engine], deps: Deps) -> str:
     """How to make `jg` resolve to the shim, for the `jg` that wins on PATH today."""
+    env = deps.env
     if first is None:
         return ("The ai-skill `jg` shim is not on PATH; run `pipx ensurepath`, then open a new terminal "
                 "(and restart Claude Code).")
-    if eng.is_npm_package_jg(first):
+    # Only a copy in npm's current global prefix: a local node_modules/.bin/jg or another prefix
+    # would survive `npm uninstall --global` (which could remove an unrelated copy instead).
+    if is_removable_global_jg(first, deps):
         steps = ("" if engine is not None and engine.private
                  else f"install ai-skill's own engine ({eng.install_command(env)}), then ")
         return (f"`jg` on PATH is a global npm copy ({first}) that hides the ai-skill shim. ai-skill runs its "
@@ -108,7 +117,7 @@ def jg_state(deps: Deps, active: bool) -> JgState:
         hints.append(f"Install the jg engine: {eng.install_command(deps.env)}")
     elif not lookup.first_is_shim:
         jg = "shadowed"
-        hints.append(shadow_hint(lookup.first, engine, deps.env))
+        hints.append(shadow_hint(lookup.first, engine, deps))
     else:
         jg = "shim"
         if not engine.private:
@@ -153,9 +162,9 @@ def fix_path(deps: Deps) -> tuple:
                          "Open a new terminal (and restart Claude Code) to pick it up."]
     if plan.status == "shadowed_machine":
         blocking = pathenv.jg_in_dir(plan.blocking_dir, deps.env)
-        if blocking and eng.is_npm_package_jg(blocking[0]):
+        if blocking and is_removable_global_jg(blocking[0], deps):
             # No admin needed: ai-skill does not use the global copy, so it can simply go.
-            return "shadowed", [shadow_hint(blocking[0], eng.find_engine(deps.env), deps.env)]
+            return "shadowed", [shadow_hint(blocking[0], eng.find_engine(deps.env), deps)]
         return "shadowed", [
             f"The jg in the machine PATH ({plan.blocking_dir}) comes before every user PATH entry. "
             f"Move {shim_dir} ahead of it in the system PATH (needs admin), then open a new shell."]

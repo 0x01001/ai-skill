@@ -336,8 +336,13 @@ test("engineDir matches cli/src/ai_skill_jev/engine.py", () => {
 });
 
 test("a global @dzhng/jevgrep from an older install is removed after the shim and the engine are in place", () => {
-  const { deps, calls, out, err } = fakeDeps({ responses: { [`node ${NPM_CLI} ${GLOBAL_LS}`]: GLOBAL_PRESENT } });
+  const { deps, calls, out, err } = fakeDeps({
+    responses: { [`node ${NPM_CLI} ${GLOBAL_LS}`]: GLOBAL_PRESENT },
+    // the shim exists once pipx has installed it (separate npm and pipx bin dirs)
+    exists: (p) => p.endsWith("pyproject.toml") || (p === `${LINUX_BIN}/jg` && lines(calls).some((c) => c.includes("pipx install"))),
+  });
   assert.equal(main(["-g"], deps), 0);
+  assert.ok(!lines(calls).some((c) => c.includes("pipx install --force")), "no repair needed");
   const l = lines(calls);
   const uninstall = `node ${NPM_CLI} uninstall --global ${ENGINE_PACKAGE}`;
   assert.ok(l.includes(uninstall), l.join("\n"));
@@ -380,4 +385,54 @@ test("Windows without LOCALAPPDATA: the engine is skipped with the reason", () =
   assert.equal(main(["-g"], deps), 0);
   assert.ok(!lines(calls).some((l) => l.includes(JG_PACKAGE)));
   assert.match(text(err), /jg: the engine dir cannot be found/);
+});
+
+// ----------------------------------------------------------------------------- shared npm/pipx bin dir
+
+// npm prefix ~/.local and PIPX_BIN_DIR ~/.local/bin: both own `/home/u/.local/bin/jg`, so the npm
+// uninstall deletes the shim pipx just put there. `exists` follows the calls made so far.
+function sharedBinDeps({ restoreWorks = true, reinstallFails = false } = {}) {
+  const uninstall = `node ${NPM_CLI} uninstall --global ${ENGINE_PACKAGE}`;
+  const shim = `${LINUX_BIN}/jg`;
+  const reinstall = `python3 -m pipx install --force ${CLI_DIR}`;
+  const fake = fakeDeps({
+    responses: { [`node ${NPM_CLI} ${GLOBAL_LS}`]: GLOBAL_PRESENT, ...(reinstallFails ? { [reinstall]: { status: 1 } } : {}) },
+    exists: (p) => {
+      if (p.endsWith("pyproject.toml")) return true;
+      if (p !== shim) return false;
+      const l = lines(fake.calls);
+      const removedAt = l.lastIndexOf(uninstall);
+      if (removedAt < 0) return false; // before the CLI install: no launcher yet, so no conflict
+      const restoredAt = l.lastIndexOf(reinstall);
+      return restoreWorks && restoredAt > removedAt;
+    },
+  });
+  return { ...fake, uninstall, reinstall };
+}
+
+test("npm and pipx share the bin dir: the shim removed by npm uninstall is reinstalled", () => {
+  const { deps, calls, out, err, uninstall, reinstall } = sharedBinDeps();
+  assert.equal(main(["-g"], deps), 0);
+  const l = lines(calls);
+  assert.ok(l.indexOf(uninstall) >= 0 && l.indexOf(uninstall) < l.lastIndexOf(reinstall), l.join("\n"));
+  assert.match(text(out), /removed the `jg` shim/);
+  assert.equal(err.length, 0, text(err));
+});
+
+test("separate bin dirs: the shim survives the uninstall and pipx is not run again", () => {
+  const { deps, calls } = fakeDeps({
+    responses: { [`node ${NPM_CLI} ${GLOBAL_LS}`]: GLOBAL_PRESENT },
+    exists: (p) => p.endsWith("pyproject.toml") || (p === `${LINUX_BIN}/jg` && lines(calls).some((c) => c.includes("uninstall"))),
+  });
+  assert.equal(main(["-g"], deps), 0);
+  assert.ok(!lines(calls).some((c) => c.includes("pipx install --force")));
+});
+
+test("the shim cannot be restored: warning with the manual command", () => {
+  for (const opts of [{ reinstallFails: true }, { restoreWorks: false }]) {
+    const { deps, err } = sharedBinDeps(opts);
+    assert.equal(main(["-g"], deps), 0);
+    assert.match(text(err), /jg shim: \/home\/u\/\.local\/bin\/jg was removed by npm uninstall and could not be restored\. Run: pipx install --force/,
+      JSON.stringify(opts));
+  }
 });

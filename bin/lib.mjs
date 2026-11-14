@@ -195,7 +195,7 @@ function installCli(deps) {
   }
   deps.log(`\n> ${show(pipx, ["ensurepath"])}`);
   const pathOk = ok(exec(deps, pipx, ["ensurepath"]));
-  return { binDir, problem: pathOk ? null : { what: "PATH", why: "pipx ensurepath failed", manual: "pipx ensurepath" } };
+  return { pipx, binDir, problem: pathOk ? null : { what: "PATH", why: "pipx ensurepath failed", manual: "pipx ensurepath" } };
 }
 
 // Same rule as cli/src/ai_skill_jev/engine.py `engine_dir`; null when it cannot be computed.
@@ -241,12 +241,29 @@ function removeGlobalJg(deps) {
   } catch {
     return null; // cannot tell: leave it; `ai doctor` reports a shadowed shim with the fix
   }
-  if (!installed) return null;
+  if (!installed) return { removed: false, problem: null };
   const args = ["uninstall", "--global", ENGINE_PACKAGE];
   deps.log(`\nRemoving the global ${ENGINE_PACKAGE}: ai-skill runs its own engine, and the global \`jg\` would hide the shim.`);
   deps.log(`> ${show(npm, args)}`);
-  return ok(exec(deps, npm, args)) ? null
-    : { what: "global jg", why: "npm uninstall failed", manual: `npm uninstall --global ${ENGINE_PACKAGE}` };
+  // Even a failed uninstall may have removed some links, so the shim is checked either way.
+  return ok(exec(deps, npm, args)) ? { removed: true, problem: null }
+    : { removed: true, problem: { what: "global jg", why: "npm uninstall failed", manual: `npm uninstall --global ${ENGINE_PACKAGE}` } };
+}
+
+// When npm's global bin dir is the pipx bin dir (npm prefix ~/.local, PIPX_BIN_DIR ~/.local/bin),
+// `npm uninstall --global` deletes the `jg` path the package declared, even after pipx replaced
+// it with the shim. Put the shim back with the same pipx install, or say how to.
+function restoreShim(deps, cli) {
+  if (!cli.binDir || !cli.pipx) return null;
+  const p = deps.platform === "win32" ? win32 : posix;
+  const launcher = p.join(cli.binDir, deps.platform === "win32" ? "jg.exe" : "jg");
+  if (deps.exists(launcher)) return null;
+  const args = ["install", "--force", deps.cliDir];
+  deps.log(`\nThe npm uninstall removed the \`jg\` shim (npm and pipx share ${cli.binDir}); reinstalling it.`);
+  deps.log(`> ${show(cli.pipx, args)}`);
+  if (ok(exec(deps, cli.pipx, args)) && deps.exists(launcher)) return null;
+  return { what: "jg shim", why: `${launcher} was removed by npm uninstall and could not be restored`,
+    manual: `pipx install --force "${CLI_GIT_URL}"` };
 }
 
 export function setupJev(deps) {
@@ -255,8 +272,9 @@ export function setupJev(deps) {
   const jgProblem = installJg(deps);
   const cliOk = !cli.problem || cli.problem.what === "PATH";
   // Only once both are in place: without the shim, the global jg is what the jevgrep skill uses.
-  const cleanupProblem = cliOk && !jgProblem ? removeGlobalJg(deps) : null;
-  const problems = [cli.problem, jgProblem, cleanupProblem].filter(Boolean);
+  const cleanup = cliOk && !jgProblem ? removeGlobalJg(deps) : null;
+  const shimProblem = cleanup?.removed ? restoreShim(deps, cli) : null;
+  const problems = [cli.problem, jgProblem, cleanup?.problem, shimProblem].filter(Boolean);
   return { cliInstalled: cliOk, binDir: cli.binDir || "", problems };
 }
 
