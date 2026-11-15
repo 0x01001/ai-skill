@@ -159,14 +159,43 @@ function launcherConflicts(deps, binDir, apps) {
     const owner = apps?.owners.get(name);
     if (owner === CLI_PACKAGE) continue;
     if (owner) {
-      conflicts.push(`\`${name}\` belongs to pipx package ${owner}`);
+      conflicts.push({ name, text: `\`${name}\` belongs to pipx package ${owner}` });
       continue;
     }
     const files = deps.platform === "win32" ? [`${name}.exe`, name] : [name];
     const file = binDir && files.map((f) => join(binDir, f)).find((p) => deps.exists(p));
-    if (file) conflicts.push(`${file} exists and ${apps ? "is not managed by pipx" : "its owner is unknown"}`);
+    if (file) conflicts.push({ name, file, text: `${file} exists and ${apps ? "is not managed by pipx" : "its owner is unknown"}` });
   }
   return conflicts;
+}
+
+// npm's global bin dir (prefix/bin, or the prefix itself on Windows); null when unknown.
+function npmGlobalBin(deps) {
+  const r = exec(deps, npmCli(deps), ["prefix", "--global"], { capture: true });
+  const prefix = ok(r) ? String(r.stdout || "").trim() : "";
+  if (!prefix) return null;
+  return deps.platform === "win32" ? prefix : posix.join(prefix, "bin");
+}
+
+const samePath = (a, b, platform) => {
+  const norm = (v) => {
+    const p = (platform === "win32" ? win32 : posix).normalize(v).replace(/[\\/]+$/, "");
+    return platform === "win32" || platform === "darwin" ? p.toLowerCase() : p;
+  };
+  return norm(a) === norm(b);
+};
+
+// With npm prefix ~/.local (npm and pipx share ~/.local/bin), the `jg` an older install left via a
+// global @dzhng/jevgrep blocks the shim. That one is ours to remove (setupJev removes it anyway),
+// so it goes first; any other unmanaged `jg` is left alone.
+function clearOldGlobalJg(deps, binDir, conflicts) {
+  if (conflicts.length !== 1) return null;
+  const [c] = conflicts;
+  if (c.name !== "jg" || !c.file) return null;
+  const npmBin = npmGlobalBin(deps);
+  if (!npmBin || !samePath(npmBin, binDir, deps.platform)) return null;
+  if (globalJgInstalled(deps) !== true) return null;
+  return removeGlobalJg(deps);
 }
 
 function installCli(deps) {
@@ -182,9 +211,12 @@ function installCli(deps) {
   const bin = exec(deps, pipx, ["environment", "--value", "PIPX_BIN_DIR"], { capture: true });
   const binDir = ok(bin) ? String(bin.stdout || "").trim() : "";
   const apps = pipxApps(deps, pipx);
-  const conflicts = launcherConflicts(deps, binDir, apps);
+  let conflicts = launcherConflicts(deps, binDir, apps);
+  const cleared = clearOldGlobalJg(deps, binDir, conflicts);
+  if (cleared?.problem) return { problem: cleared.problem };
+  if (cleared?.removed) conflicts = launcherConflicts(deps, binDir, apps);
   if (conflicts.length) {
-    return { problem: { what: "ai CLI", why: `not overwriting other commands: ${conflicts.join("; ")}`,
+    return { problem: { what: "ai CLI", why: `not overwriting other commands: ${conflicts.map((c) => c.text).join("; ")}`,
       manual: `remove or rename those, then: ${manual}` } };
   }
   // --force only refreshes our own venv (its `ai`/`jg` were checked above); a fresh install never forces.
@@ -195,7 +227,7 @@ function installCli(deps) {
   }
   deps.log(`\n> ${show(pipx, ["ensurepath"])}`);
   const pathOk = ok(exec(deps, pipx, ["ensurepath"]));
-  return { pipx, binDir, problem: pathOk ? null : { what: "PATH", why: "pipx ensurepath failed", manual: "pipx ensurepath" } };
+  return { pipx, binDir, globalJgRemoved: !!cleared?.removed, problem: pathOk ? null : { what: "PATH", why: "pipx ensurepath failed", manual: "pipx ensurepath" } };
 }
 
 // Same rule as cli/src/ai_skill_jev/engine.py `engine_dir`; null when it cannot be computed.
@@ -232,15 +264,19 @@ function installJg(deps) {
 // A global @dzhng/jevgrep (installed by ai-skill < 1.0.0, or by the jevgrep skill) puts an npm `jg`
 // on PATH that can hide the shim; when it sits in the machine PATH only an admin could reorder it.
 // ai-skill no longer uses it, so it is removed once the shim and the private engine are in place.
+function globalJgInstalled(deps) {
+  const list = exec(deps, npmCli(deps), ["ls", "--global", "--depth=0", "--json", ENGINE_PACKAGE], { capture: true });
+  try {
+    return Boolean(JSON.parse(String(list.stdout || "{}")).dependencies?.[ENGINE_PACKAGE]);
+  } catch {
+    return null;
+  }
+}
+
 function removeGlobalJg(deps) {
   const npm = npmCli(deps);
-  const list = exec(deps, npm, ["ls", "--global", "--depth=0", "--json", ENGINE_PACKAGE], { capture: true });
-  let installed = false;
-  try {
-    installed = Boolean(JSON.parse(String(list.stdout || "{}")).dependencies?.[ENGINE_PACKAGE]);
-  } catch {
-    return null; // cannot tell: leave it; `ai doctor` reports a shadowed shim with the fix
-  }
+  const installed = globalJgInstalled(deps);
+  if (installed === null) return null; // cannot tell: leave it; `ai doctor` reports a shadowed shim with the fix
   if (!installed) return { removed: false, problem: null };
   const args = ["uninstall", "--global", ENGINE_PACKAGE];
   deps.log(`\nRemoving the global ${ENGINE_PACKAGE}: ai-skill runs its own engine, and the global \`jg\` would hide the shim.`);
@@ -272,7 +308,8 @@ export function setupJev(deps) {
   const jgProblem = installJg(deps);
   const cliOk = !cli.problem || cli.problem.what === "PATH";
   // Only once both are in place: without the shim, the global jg is what the jevgrep skill uses.
-  const cleanup = cliOk && !jgProblem ? removeGlobalJg(deps) : null;
+  // Already done when it blocked the CLI install (clearOldGlobalJg): the shim went in after it.
+  const cleanup = cliOk && !jgProblem && !cli.globalJgRemoved ? removeGlobalJg(deps) : null;
   const shimProblem = cleanup?.removed ? restoreShim(deps, cli) : null;
   const problems = [cli.problem, jgProblem, cleanup?.problem, shimProblem].filter(Boolean);
   return { cliInstalled: cliOk, binDir: cli.binDir || "", problems };

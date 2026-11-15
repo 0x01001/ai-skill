@@ -436,3 +436,45 @@ test("the shim cannot be restored: warning with the manual command", () => {
       JSON.stringify(opts));
   }
 });
+
+// ----------------------------------------------------------------------------- old global jg blocks the CLI
+
+// macOS/Linux with npm prefix ~/.local: an older install's global @dzhng/jevgrep left `jg` in the
+// pipx bin dir before the CLI was ever installed. It is removed first, then the CLI goes in.
+function oldGlobalJgDeps({ npmPrefix = "/home/u/.local", uninstallFails = false } = {}) {
+  const uninstall = `node ${NPM_CLI} uninstall --global ${ENGINE_PACKAGE}`;
+  const fake = fakeDeps({
+    responses: {
+      [`node ${NPM_CLI} ${GLOBAL_LS}`]: GLOBAL_PRESENT,
+      [`node ${NPM_CLI} prefix --global`]: { stdout: `${npmPrefix}\n` },
+      ...(uninstallFails ? { [uninstall]: { status: 1 } } : {}),
+    },
+    exists: (p) => p.endsWith("pyproject.toml")
+      || (p === join(LINUX_BIN, "jg") && (uninstallFails || !lines(fake.calls).includes(uninstall))),
+  });
+  return { ...fake, uninstall };
+}
+
+test("an old global npm jg in the shared bin dir is removed before the CLI install", () => {
+  const { deps, calls, out, err, uninstall } = oldGlobalJgDeps();
+  assert.equal(main(["-g"], deps), 0);
+  const l = lines(calls);
+  assert.ok(l.indexOf(uninstall) >= 0 && l.indexOf(uninstall) < l.indexOf(`python3 -m pipx install ${CLI_DIR}`), l.join("\n"));
+  assert.equal(l.filter((c) => c === uninstall).length, 1);
+  assert.match(text(out), /run `ai auth`/);
+  assert.equal(err.length, 0, text(err));
+});
+
+test("an unmanaged jg outside npm's global bin dir is still never touched", () => {
+  const { deps, calls, err } = oldGlobalJgDeps({ npmPrefix: "/usr/local" });
+  assert.equal(main(["-g"], deps), 0);
+  assert.ok(!lines(calls).some((l) => l.includes("pipx install")));
+  assert.match(text(err), /\.local[\\/]bin[\\/]jg exists and is not managed by pipx/);
+});
+
+test("the old global jg cannot be removed: the CLI is skipped with the npm command to run", () => {
+  const { deps, calls, err } = oldGlobalJgDeps({ uninstallFails: true });
+  assert.equal(main(["-g"], deps), 0);
+  assert.ok(!lines(calls).some((l) => l.includes("pipx install")));
+  assert.match(text(err), /global jg: npm uninstall failed\. Run: npm uninstall --global @dzhng\/jevgrep/);
+});
