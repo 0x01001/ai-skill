@@ -18,6 +18,8 @@ Create the run dir `<repo-root>/ai/running/ai-orchestrate-<YYMMDD-HHMM>/` (insid
 
 ## 2. Build and validate the graph
 
+Resolve and record the [model ceiling](references/models.md#rules) before assigning jobs.
+
 One row per job in `run.md`:
 
 | Field | Meaning |
@@ -81,5 +83,7 @@ Then run one arbiter in a fresh context at the arbiter's tier recorded in `run.m
 Done when every required job is `done` with evidence, the arbiter passed, `run.md` matches reality, and nothing this run started is left running unaccounted for.
 
 ## Resume
+
+Apply [the model ceiling](references/models.md#rules) again before dispatching anything on resume; already-running sessions keep their model.
 
 `--resume <run-dir>`: a run dir holding `brief.md` instead of `run.md` is an ai-auto run, and so is an `ai-orchestrate-*` dir whose parent dir holds `brief.md`. Unless ai-auto's own Resume just handed you this dir, resume the ai-auto dir through ai-auto (`Skill(skill: "ai-auto", args: "--resume <ai-auto dir>")`), which re-checks its confirmation and prerequisites and then hands you the nested dir. Otherwise read `run.md` and check its sessions with `sessions.py status`. Keep `done` jobs whose evidence still holds; verify settled jobs not yet marked `done` (section 5); re-subscribe to writers still running; re-dispatch only lost jobs, each as a new attempt once its old writer has stopped. Then resume the section 4 admission loop alongside section 5: jobs never dispatched (still queued behind deps or the concurrency limit) are admitted as their deps become `done`, within the same limits, and the arbiter runs once every required job is `done` again.

@@ -1,8 +1,7 @@
-"""`ai auth`, `ai logout`, `ai doctor`, `ai decide` (plan 3, 5.2-5.4).
+"""`ai auth`, `ai logout`, `ai doctor`, `ai decide` and `ai model (plan 3, 5.2-5.4).
 
-The agent never runs `ai auth` or `ai logout`; it runs `ai doctor --json`, `ai decide` and `jg`.
+The agent never runs `ai auth` or `ai logout`; it runs `ai doctor --json`, `ai decide`, `ai model` and `jg`.
 """
-
 from __future__ import annotations
 
 import argparse
@@ -525,6 +524,35 @@ def cmd_decide(deps: Deps, kind: str, source: str, run_dir: Optional[str]) -> in
     return code
 
 
+# --------------------------------------------------------------------------- ai model
+
+_MODELS = ("haiku", "sonnet", "opus", "fable")
+
+
+def _cmd_model(deps: Deps, model: Optional[str]) -> int:
+    try:
+        directory = cred.config_dir(deps.env)
+        path = directory / "model.json"
+        if model is None:
+            try:
+                with path.open("r", encoding="utf-8") as handle:
+                    data = json.load(handle)
+            except FileNotFoundError:
+                model = "fable"
+            else:
+                if not isinstance(data, dict) or data.get("model") not in _MODELS:
+                    raise ValueError("invalid model setting")
+                model = data["model"]
+        else:
+            cred.ensure_private_dir(directory)
+            cred.atomic_write_json(path, {"model": model})
+    except (OSError, ValueError, cred.StateError) as exc:
+        print(f"Cannot read or save model setting: {exc}", file=sys.stderr)
+        return EXIT_FAIL
+    deps.say(model)
+    return EXIT_OK
+
+
 # --------------------------------------------------------------------------- entry point
 
 def _startup_cleanup(env) -> None:
@@ -537,7 +565,7 @@ def _startup_cleanup(env) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="ai", description="Optional Jev discovery for the ai-skill skills.")
+    parser = argparse.ArgumentParser(prog="ai", description="Jev discovery and Claude model preference for ai-skill.")
     parser.add_argument("--version", action="version", version=f"ai-skill {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("auth", help="store a Jev key in the OS secret store and set up jevgrep")
@@ -549,12 +577,16 @@ def build_parser() -> argparse.ArgumentParser:
     decide.add_argument("--input", default="-", help="JSON input file, or - for stdin (default)")
     decide.add_argument("--ai-run-dir", dest="ai_run_dir", default=None,
                         help="absolute run dir: shares the run budget (jev-budget.json)")
+    model = sub.add_parser("model", help="show or set the maximum Claude model for orchestration")
+    model.add_argument("model", nargs="?", choices=_MODELS, help="model ceiling (default: fable)")
     return parser
 
 
 def main(argv: Optional[List[str]] = None, deps: Optional[Deps] = None) -> int:
     args = build_parser().parse_args(argv)
     deps = deps or Deps(select=menu.arrow_select)
+    if args.command == "model":
+        return _cmd_model(deps, args.model)
     _startup_cleanup(deps.env)
     if args.command == "auth":
         return cmd_auth(deps)

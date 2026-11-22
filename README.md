@@ -85,6 +85,10 @@ Examples:
 /ai-main --resume D:/repo/ai/running/ai-auto-261110-0930
 ```
 
+### Model ceiling
+
+`ai model` prints the current ceiling for `ai-orchestrate` dispatches. The default is Fable (`t4`), independent of `ai auth`. Set a persistent per-user ceiling with `ai model <haiku|sonnet|opus|fable>` (for example, `ai model opus`). The ceiling permits a model without forcing its use; a lower run contract cap still wins. An already-running worker keeps its model. The command is local and does not require a Jev key.
+
 ## How a run works
 
 - **Contract first.** ai-auto writes `brief.md` (Objective, Done means with verification, Out of scope, Constraints, Delivery, Authorized effects) and records the user's Confirm in `confirmed.md` with the brief's hash. An unconfirmed or edited brief authorizes nothing.
