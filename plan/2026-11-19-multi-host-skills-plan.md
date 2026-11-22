@@ -16,7 +16,7 @@ Host đóng, đúng năm id: `claude-code`, `opencode`, `cursor`, `codex`, `gene
 
 ### 1. Viết `skills/ai-orchestrate/references/hosts.md`
 
-Tạo file mới, nội dung dưới đây là toàn bộ file. Không thêm host, tool, hay flag ngoài các dòng này.
+Tạo file mới, nội dung dưới đây là toàn bộ file. Copy nguyên văn khối này vào file: không diễn giải, không rút gọn, không đổi thứ tự. Không thêm host, tool, hay flag ngoài các dòng này.
 
 ```markdown
 # Hosts
@@ -29,11 +29,13 @@ The skill root is the directory that contains the SKILL.md you are following. Si
 
 ## Bind
 
-First match wins. Record `host: <id>` in `run.md`, or in the brief Constraints when no `run.md` exists yet. `--host <id>` on the user command wins over the probe. If `--host` names an id in this file and that id's required tool is absent, stop and report the mismatch; do not fall through. An unknown `--host` value is the same stop.
+Only the coordinator, the session the user invoked, runs this probe. A session whose prompt names a worker brief (`<run-dir>/jobs/<job-id>/brief.md`) is a worker. A worker (subagent or sub-session) does not probe: it takes `Host:` and `Worker runtime:` from its brief. A brief with no `Host:` line means `generic`. A worker never runs `ask`; a question that blocks it is `BLOCKER / QUESTION`, as in [worker-brief.md](worker-brief.md).
 
-1. `claude-code` — this session can call tools named `Skill`, `Agent`, and `AskUserQuestion`.
-2. `opencode` — this session can call a tool named `skill` whose input has an `id` field, and it cannot call `Skill`.
-3. `cursor` — this session can call a tool named `Task` to launch a subagent, and it cannot call `Skill` or OpenCode's `skill` tool.
+First match wins. Record `host: <id>` in `run.md`, or in the brief Constraints when no `run.md` exists yet. `--host <id>` on the user command wins over the probe. An unknown `--host` value is a stop. If `--host` names an id whose requirement below is not met, stop and report the mismatch; do not fall through. Requirements: `claude-code` needs everything in rule 1; `opencode` needs the `skill` tool in rule 2; `cursor` needs the `Task` tool in rule 3; `codex` and `generic` need no tool and are always accepted.
+
+1. `claude-code` — this session can call tools named `Skill` and `AskUserQuestion`, and a subagent tool named `Agent` (older Claude Code builds name it `Task`).
+2. `opencode` — this session can call a tool named exactly `skill` (lowercase) that loads a skill by name, and it cannot call `Skill`.
+3. `cursor` — this session can call a tool named `Task` to launch a subagent, and it cannot call `Skill` or a tool named `skill`.
 4. `codex` — none of those tools exist, and this session was started as Codex (the loaded skill wrapper is a Codex skill block, or the user invoked `$ai-main`, `$ai-auto`, or `$ai-orchestrate`).
 5. `generic` — anything else.
 
@@ -45,7 +47,9 @@ The default worker runtime is the host. A different runtime is allowed only when
 
 ## Operations
 
-`unavailable` means: run the job `inline` when the unit table allows inline; otherwise mark it `blocked` with class `runtime_missing` before dispatch. Never invent a tool name that is not in this file and not in the tool schema this session already shows you.
+`unavailable` means: run the job `inline` when the unit table allows inline; otherwise mark it `blocked` with class `runtime_missing` before dispatch. Never invent a tool name or field name that is not in this file and not in the tool schema this session already shows you.
+
+Which row to read: `ask`, `handoff`, and `spawn-subagent` use the host's row. `spawn-sub-session`, `wait`, `talk`, `stop`, and `usage` use the row of that job's worker runtime, the `runtime` field of that job in `run.md`. An inline or subagent job's runtime is the host. A sub-session's runtime is the host, or `codex` / `orca` when it runs cross-runtime. A Claude Code host with a Codex worker uses the `codex` rows for that job, not `SendMessage` or `claude stop`. An Orca worker uses [cross-runtime.md](cross-runtime.md), not this file.
 
 ### ask
 
@@ -59,16 +63,16 @@ One question, recommended option first. Same content rules as the skill that cal
 Load sibling skill `<name>` and continue with `<args>` as the request, in this same session. Do not start a new top-level session for a handoff.
 
 - `claude-code`: `Skill(skill: "<name>", args: "<args>")`.
-- `opencode`: `skill` tool with `{"id": "<name>"}`, then continue with `<args>` as the task text.
+- `opencode`: the `skill` tool, with `<name>` in the one input field that tool's schema in this session describes as the skill's name or id; then continue with `<args>` as the task text. If the schema has no such field, or more than one candidate, do what `codex` does below.
 - `codex`, `cursor`, `generic`: read `<this-skill-root>/../<name>/SKILL.md` and follow it. `<args>` is the request text.
 
 ### spawn-subagent
 
 A fragment in a fresh context, result needed this turn. Read-only when the job is R0.
 
-- `claude-code`: `Agent` with `model` and `effort` from [models.md](models.md) (`haiku`, `sonnet`, `opus`, `fable`; `low`, `medium`, `high`). `isolation: "worktree"` only when [recovery.md](recovery.md) rung 4 says so.
+- `claude-code`: `Agent` (or `Task` on builds that name it so) with `model` and `effort` from [models.md](models.md) (`haiku`, `sonnet`, `opus`, `fable`; `low`, `medium`, `high`). `isolation: "worktree"` only when [recovery.md](recovery.md) rung 4 says so.
 - `cursor`: one `Task` tool call. The prompt is the brief path plus the one-line goal. Foreground: do not set a background flag. If the visible Task schema has a readonly, model, or effort field, set readonly for R0 and pass the effort word only when that schema's enum contains it. Do not pass `haiku`, `sonnet`, `opus`, or `fable`. If the schema has no such field, omit it and record `host-configured model, not matched to tier`.
-- `opencode`: if this session's tool list has a subagent or task tool, call that tool with the brief path as the prompt and no Claude model alias. If it does not, this operation is `unavailable`.
+- `opencode`: if this session's tool list has a subagent or task tool, call that tool with the brief path as the prompt and no Claude model alias. Model and effort follow the same rule as `cursor` above: set them only when that tool's schema has such fields; otherwise record `host-configured model, not matched to tier`. If no such tool exists, this operation is `unavailable`.
 - `codex`: `unavailable`. Use spawn-sub-session. Do not call `spawn_agent`.
 - `generic`: `unavailable`.
 
@@ -77,7 +81,7 @@ A fragment in a fresh context, result needed this turn. Read-only when the job i
 One deliverable with its own branch or PR. The worktree already exists: [sub-sessions.md](sub-sessions.md) Launch steps 1 and 2, using `git worktree add`, unless the worktree-helper probe below passes.
 
 - `claude-code`: the launch command in [sub-sessions.md](sub-sessions.md). Permission mode, `--add-dir`, and the name pattern stay as written there.
-- `codex`: the Codex CLI command block in [cross-runtime.md](cross-runtime.md), including that file's model and effort rules. `--cross-runtime` is not required when the host is `codex`. Record the session id the command prints and the pid of the process you started.
+- `codex`: experimental. The Codex CLI command block in [cross-runtime.md](cross-runtime.md), including that file's model and effort rules. `--cross-runtime` is not required when the host is `codex`. Record the session id the command prints and the pid of the process you started. If the command fails because the sandbox refuses the worktree path, `~/.codex`, or the network, mark the job `blocked` with class `runtime_missing` and the command output as evidence. Do not retry with a weaker sandbox flag. This row serves two cases: a `codex` host's own workers, and Codex workers that a `claude-code` host launches with `--cross-runtime`. A limit that applies only to a `codex` host is written as `On a codex host:` inside this row, never by turning the whole row `unavailable`.
 - `cursor`: one `Task` tool call. The prompt says the worktree path is the only writable root and names the brief. If the visible schema has a cwd or path field, set it to that worktree. If it has an isolation or worktree flag, set it. Record the agent id the tool returns. Do not pass a Claude model alias or `--permission-mode`.
 - `opencode`: `unavailable`.
 - `generic`: `unavailable`.
@@ -85,8 +89,8 @@ One deliverable with its own branch or PR. The worktree already exists: [sub-ses
 ### wait
 
 - `claude-code`: `SendMessage(to: "<name>", notify_when_idle: true)` with no message. Fallback: `python3 <ai-orchestrate-skill-root>/scripts/sessions.py wait <ids...>`, with the same `--all` and `--timeout` rules as [sub-sessions.md](sub-sessions.md). Never `<repo-root>/.claude/skills/...`.
-- `codex`: the `codex exec` you started is the wait. Run it as a background shell and take the completion notice this session already uses for background shells. Do not poll. Do not call `sessions.py`. The report is `<run-dir>/jobs/<job-id>/last.md` for a read-only job, otherwise `report.md`.
-- `cursor`: a foreground Task has already waited. For a background Task, read `~/.cursor/subagents/` for that agent id when this session gets a completion notice. Do not poll in a loop. Do not call `sessions.py`.
+- `codex`: the `codex exec` you started is the wait. If this session's shell tool can run a process in the background and notifies on exit, use that and do not poll. Otherwise run it in the foreground; if the shell tool times out before the process exits, run `stop` for that process first, then mark the job `blocked` with class `runtime_missing` and the partial output as evidence. Keep its worktree as evidence: mark it `evidence-kept` in `run.md`, and Clean up leaves it in place. Do not call `sessions.py`. The report is `<run-dir>/jobs/<job-id>/last.md` for a read-only job, otherwise `report.md`.
+- `cursor`: a foreground Task has already waited; its tool result is the worker's final message. A background Task is used only when the visible Task schema has a background field; its result is whatever the completion notice delivers. Do not read a guessed file path for the result. Do not poll in a loop. Do not call `sessions.py`.
 - `opencode`, `generic`: there is no handle to wait on.
 
 ### talk
@@ -98,9 +102,11 @@ One deliverable with its own branch or PR. The worktree already exists: [sub-ses
 
 ### stop
 
-- `claude-code`: `claude stop <id>` keeps the conversation; `claude rm <id>` deletes it. Worktree removal stays [sub-sessions.md](sub-sessions.md) Clean up.
-- `codex`: stop the process you started. Do not run `claude stop`. Then `git worktree remove` as in that Clean up section.
-- `cursor`: no CLI stop. After the Task has ended, `git worktree remove` a worktree this run created only when `git worktree list` shows it and it has no uncommitted changes. Never remove a worktree you cannot see in `git worktree list`.
+Stop ends the worker process only. It never removes a worktree. Worktree removal happens only at the run's Clean up step ([sub-sessions.md](sub-sessions.md) Clean up), never inside `stop`, and never for a job marked `blocked` whose worktree is kept as evidence.
+
+- `claude-code`: `claude stop <id>` keeps the conversation; `claude rm <id>` deletes it.
+- `codex`: stop the process you started. Do not run `claude stop`.
+- `cursor`: no CLI stop. At Clean up, `git worktree remove` a worktree this run created only when `git worktree list` shows it and it has no uncommitted changes. Never remove a worktree you cannot see in `git worktree list`.
 - `opencode`, `generic`: nothing to stop.
 
 ### usage
@@ -133,7 +139,7 @@ Same flags on every host: `--cross-runtime`, `--resume <run-dir>`, `--yes`, `--y
 - `opencode`: `@ai-main`, `@ai-auto`, `@ai-orchestrate`
 - `generic`: that host's own command for the skill name
 
-`ai-main` is user-invoked. `disable-model-invocation: true` stays in its frontmatter. Codex reads `agents/openai.yaml` in that skill instead of that field.
+`ai-main` is user-invoked. `disable-model-invocation: true` stays in its frontmatter. Codex reads `agents/openai.yaml` in that skill instead of that field. A host that honours neither may load `ai-main` on its own; on such a host, if the user did not name `ai-main`, sizing a task is not a reason to stay in it: answer the request directly.
 ```
 
 ### 2. Frontmatter và file Codex cho `ai-main`
@@ -141,8 +147,10 @@ Same flags on every host: `--cross-runtime`, `--resume <run-dir>`, `--yes`, `--y
 Trong cả ba `SKILL.md`, thêm một dòng frontmatter ngay sau `argument-hint`, không đổi `name`, `description`, `argument-hint`, hay `disable-model-invocation`:
 
 ```yaml
-compatibility: git required. Host profiles: Claude Code, Codex, Cursor, OpenCode; any other Agent Skills host runs the generic profile (direct and inline only). Claude background workers need the claude CLI and Python 3. Optional: gh, the ai CLI.
+compatibility: "git required. Host profiles: Claude Code, Codex, Cursor, OpenCode; any other Agent Skills host runs the generic profile (direct and inline only). Claude background workers need the claude CLI and Python 3. Optional: gh, the ai CLI."
 ```
+
+Giá trị phải nằm trong nháy kép: nó chứa `: ` (`Host profiles: …`, `Optional: …`), để trần thì YAML không hợp lệ. Nội dung không chứa dấu `"`.
 
 `description` giữ nguyên. Không kéo danh sách host vào `description` (giới hạn spec 1024 ký tự; field này đã đủ).
 
@@ -169,14 +177,17 @@ Giữ nguyên gate, bảng lane, luật `--resume`, luật brief/confirmed hash,
 `skills/ai-auto/SKILL.md`:
 
 - Câu project-rules đổi thành: `Bind the host in [hosts.md](../ai-orchestrate/references/hosts.md) before any ask or handoff. Project rules, as that file defines them, win over the brief.`
-- `AskUserQuestion` đổi thành `ask`. Vẫn một câu một lúc, recommended answer first, option `preview` khi phải so hình.
+- `AskUserQuestion` đổi thành `ask`. Vẫn một câu một lúc, recommended answer first. Option `preview` chỉ trên `claude-code` (field riêng của `AskUserQuestion`); host khác mô tả phần cần so ngay trong message của `ask`.
 - Cả hai chỗ `Skill(skill: "ai-orchestrate", args: ...)` đổi thành `handoff` với cùng args (`<run-dir>/brief.md` cộng `--cross-runtime` khi user truyền; `--resume <that dir>` khi Resume).
 - Bullet Permission mode: thêm một câu `On claude-code, the permission-mode flag is the one in sub-sessions.md. On every other host, do not pass a Claude permission-mode flag; if this host prompts before edits or commands, say so now.`
 
 `skills/ai-orchestrate/SKILL.md`:
 
 - Câu project-rules đổi thành cùng dạng ai-main, link `references/hosts.md`.
-- `Skill(skill: "ai-auto", ...)` đổi thành `handoff`.
+- Bảng field job (khoảng dòng 25–34): thêm hàng `| runtime | worker runtime that runs it: the host for inline and subagent jobs; the host, codex, or orca for a sub-session ([hosts.md](references/hosts.md), Operations) |` ngay sau hàng `unit`. Câu "Record the unit, tier, …" (khoảng dòng 54) thêm `runtime` sau `unit`.
+- Resume: `run.md` không có dòng `host:` là run tạo trước change này; coi host của coordinator là `claude-code`. Job đã từng dispatch (có ít nhất một attempt trong `run.md`) mà thiếu `runtime` thì suy từ lần dispatch đã ghi: unit inline, subagent, Workflow hoặc sub-session là `claude-code`; unit cross-runtime là `codex` khi job ghi Codex session id hoặc model Codex, `orca` khi job ghi Orca task id. Job đã dispatch mà không suy được thì đánh `blocked` riêng job đó, nêu lý do và hỏi user; không đoán, không dừng các job khác. Job chưa từng dispatch thì không suy lúc resume: `runtime` của nó được chọn khi job tới lượt dispatch, theo cùng luật chọn unit như run mới, rồi ghi vào `run.md`. Nếu `host:` của `run.md` (hoặc `claude-code` theo luật trên) khác host vừa bind, dừng và bảo user resume run đó trên host ghi trong `run.md`; không đổi hàng operation giữa chừng.
+- Bullet Clean up (khoảng dòng 80): câu `Keep only a worktree git refuses to remove (uncommitted changes) and list it with why.` đổi thành `Keep a worktree git refuses to remove (uncommitted changes), and a worktree run.md marks evidence-kept for a blocked job; list each with why.` Job `blocked` mà worktree giữ làm bằng chứng (hosts.md `wait`, `stop`) ghi `evidence-kept` cạnh worktree đó trong `run.md` ngay lúc đánh `blocked`.
+- Dòng 13: `AskUserQuestion` (xác nhận external effects) đổi thành `ask`. Dòng 13 và dòng 89: cả hai `Skill(skill: "ai-auto", ...)` đổi thành `handoff` với cùng args.
 - Bảng unit, hàng Workflow: cột Fits nói `claude-code only; other hosts use the Workflow unit section of hosts.md`. Không bảo host khác load `workflow-authoring`.
 - Hàng sub-session: bỏ `` `claude --bg` `` khỏi tên unit. Cột Fits thành `One deliverable with its own branch/PR, long-running, resumable. Mechanics: hosts.md spawn-sub-session. Claude Code commands: sub-sessions.md.`
 - Hàng subagent: `spawn-subagent` (hosts.md), không gọi tên `Agent` trong `SKILL.md`.
@@ -189,7 +200,7 @@ Sau bước này, grep ba `SKILL.md` không còn `Skill(skill:`, `AskUserQuestio
 
 ### 4. Reference còn lại trỏ về profile, không nhân đôi lệnh
 
-`skills/ai-orchestrate/references/sub-sessions.md`: dòng mở đầu thành `Claude Code worker runtime only. Other hosts use hosts.md and do not run the commands in this file.` Giữ nguyên mọi lệnh `claude` bên dưới. Hai chỗ `python3 <repo-root>/.claude/skills/ai-orchestrate/scripts/sessions.py` đổi thành `python3 <ai-orchestrate-skill-root>/scripts/sessions.py`. Probe worktree helper đổi thành thứ tự trong hosts.md (`.agents/skills/worktree/...` rồi `.claude/skills/worktree/...`), cùng điều kiện dry-run đang viết.
+`skills/ai-orchestrate/references/sub-sessions.md`: dòng mở đầu thành `Claude Code worker runtime only. Other hosts use hosts.md and do not run the commands in this file.` Giữ nguyên mọi lệnh `claude` bên dưới. Chỗ duy nhất `python3 <repo-root>/.claude/skills/ai-orchestrate/scripts/sessions.py` (dòng Fallback của Watch, khoảng dòng 34) đổi thành `python3 <ai-orchestrate-skill-root>/scripts/sessions.py`. Probe worktree helper đổi thành thứ tự trong hosts.md (`.agents/skills/worktree/...` rồi `.claude/skills/worktree/...`), cùng điều kiện dry-run đang viết.
 
 `skills/ai-orchestrate/references/recovery.md`:
 
@@ -201,12 +212,13 @@ Sau bước này, grep ba `SKILL.md` không còn `Skill(skill:`, `AskUserQuestio
 
 - Câu `Subagent jobs put the same sections in the Agent prompt` đổi thành `spawn-subagent jobs put the same sections in that operation's prompt`.
 - Dòng Rules `AGENTS.md, CLAUDE.md, .claude/rules/` đổi thành `the project rules hosts.md names`.
+- Thêm vào đầu template brief hai dòng do coordinator điền: `Host: <id>` và `Worker runtime: <id>`, kèm một câu: `Do not probe the host; use these two lines. No Host: line means generic.` Đây là nguồn host của mọi worker (hosts.md Bind).
 - Dòng cuối `SendMessage the coordinator` đổi thành `A question that blocks you: if your brief names a claude-code coordinator session, SendMessage that session and wait. Otherwise write it under BLOCKER / QUESTION and stop.` `SendMessage` trong file này chỉ còn trong câu điều kiện claude-code đó.
 
 `skills/ai-orchestrate/references/models.md`:
 
 - Dòng "Aliases for Claude Code units" giữ, thêm ngay sau bảng tier: `Pass haiku, sonnet, opus, or fable only when the worker runtime is claude-code. Every other runtime keeps the tier and the effort word and does not pass those aliases.`
-- Rule 2 đổi thành: `Pin every dispatch through hosts.md. A claude-code worker passes model and effort explicitly. Any other runtime resolves the model in hosts.md. A contract pin that is one of those four aliases blocks the job unless the worker runtime is claude-code.`
+- Rule 2 đổi thành: `Pin every dispatch through hosts.md. A claude-code worker passes model and effort explicitly. Codex and Orca workers resolve the model as cross-runtime.md "Resolve the model" says. A Cursor or OpenCode worker whose tool schema has no model or effort field passes neither and records host-configured model, not matched to tier; it runs only when the contract has no model pin and the run's effective ceiling (Rule 3: the lower of the ai model ceiling and any contract cap) is t4; otherwise the job is blocked with that schema and the ceiling as evidence, because the unverified model may exceed the pin or ceiling. A contract pin that is one of those four aliases blocks the job unless the worker runtime is claude-code.`
 - Rule 3, thêm sau câu đọc `ai model`: `On a host other than claude-code, still run ai model and record its output. Do not map that alias onto the host model. A t1–t4 contract cap still limits which job row you may pick, but you do not pass the alias. Effort on a Codex worker tops out at high unless the contract pins xhigh. There is no xhigh on any other non-Claude runtime; high is the top.`
 
 `skills/ai-orchestrate/references/cross-runtime.md`: đoạn mở "Enter only with `--cross-runtime`" đổi thành hai luật:
@@ -234,6 +246,7 @@ npx -y github:0x01001/ai-skill -a claude-code -a codex -a cursor -a opencode -y 
 
 - Usage: thêm bảng invocation đúng như mục Invocation trong hosts.md. Flags giữ nguyên.
 - Requirements, bullet Claude Code đổi thành: một host trong hosts.md. `claude --bg` và `python3` chỉ bắt buộc khi worker runtime là `claude-code`. `git` vẫn bắt buộc. Codex hoặc Orca vẫn optional cho `--cross-runtime`.
+- Ngay dưới bảng invocation, một dòng: `Codex as host is experimental: background workers depend on codex exec running inside the Codex sandbox. Cursor and OpenCode workers depend on the tools that host exposes; without them those hosts run direct and inline only.` Nếu smoke test Codex ở Verification fail, dòng này đổi thành `Codex as host runs direct and inline only.`
 - Layout: thêm `references/hosts.md` và `ai-main/agents/openai.yaml`.
 
 `.gitignore` đã có `.agents/skills/` và `.claude/skills/`. Không thêm dòng.
@@ -252,6 +265,10 @@ Tạo `test/skills-host.test.mjs`. `ROOT` giống install test: `resolve(dirname
 - `skills/ai-main/agents/openai.yaml` không đúng hai dòng `policy:` và `  allow_implicit_invocation: false`.
 - `skills/ai-orchestrate/references/sub-sessions.md` còn chuỗi `.claude/skills/ai-orchestrate`.
 - `package.json` `scripts.test` không bằng lệnh ở trên.
+- Frontmatter của ba `SKILL.md` (giữa hai dòng `---` đầu file): mỗi key `name`, `description`, `compatibility` không xuất hiện đúng một lần; hoặc một giá trị không bắt đầu bằng `"` mà chứa `: ` (YAML sẽ hỏng); hoặc giá trị `compatibility` không bắt đầu và kết thúc bằng `"`, hay chứa thêm `"` bên trong. Repo không có YAML parser trong dependency, nên kiểm bằng luật này, không thêm dependency.
+- `skills/ai-orchestrate/SKILL.md` thiếu hàng `| runtime |` trong bảng field job.
+- Một link markdown tương đối `](<path>)` trong ba `SKILL.md` hoặc trong `hosts.md` trỏ tới file không tồn tại (bỏ link `http(s)://`, cắt phần `#anchor` trước khi kiểm). Hiện mọi link trong ba `SKILL.md` đều trỏ tới file có thật, nên luật này không làm đỏ code cũ.
+- `skills/ai-orchestrate/references/worker-brief.md` thiếu `Host:` hoặc `Worker runtime:`.
 
 Không gọi mạng, không gọi `claude` hay `codex`.
 
@@ -265,7 +282,7 @@ Không gọi mạng, không gọi `claude` hay `codex`.
 
 ## Verification
 
-Từ `D:/project/tool/ai-skill`:
+Từ thư mục gốc repo (`/Users/vnext/project/ai-skill`):
 
 ```bash
 npm test
@@ -275,13 +292,27 @@ Kỳ vọng: mọi test trong `test/install.test.mjs` vẫn pass, và `test/skil
 
 Đọc lại `skills/ai-main/SKILL.md`: có link `hosts.md`, không có `Skill(skill:`. Đó là bằng chứng lane handoff không còn khóa Claude trong file entry.
 
-Không chạy skill trên Cursor/Codex thật trong change này. Profile Cursor chỉ được phép set field có trong schema tool của session; test không giả lập schema đó.
+`npm test` xanh chỉ chứng minh file đúng hình dạng (chuỗi bị cấm, heading, frontmatter, link), không chứng minh skill chạy được trên host khác.
+
+Trước khi merge, smoke test tay một lần trên Codex, host duy nhất có đường worker thật: từ một session Codex, `git worktree add` một worktree tạm, rồi chạy block `codex exec` của cross-runtime.md trong worktree đó với một brief ngắn: tạo `smoke.txt` chứa `ok` ở gốc worktree, rồi viết `report.md`. Pass khi đủ cả ba: process exit 0, `<worktree>/smoke.txt` tồn tại với nội dung `ok` (`git -C <worktree> status --porcelain` thấy nó), và `report.md` tồn tại. Chỉ có `report.md` mà không có `smoke.txt` là fail: worker chỉ ghi được vào `<run-dir>` qua `--add-dir`. Fail thì chỉ host `codex` mất worker: thêm vào đầu hàng `codex` của `spawn-sub-session` trong hosts.md câu `On a codex host: unavailable (nested codex exec failed the smoke test).`, giữ nguyên phần còn lại của hàng cùng các hàng `wait`, `talk`, `stop` cho Codex worker do host `claude-code` chạy qua `--cross-runtime`; dòng README đổi như mục 5. Ghi kết quả (pass/fail, output) vào mô tả PR. Xóa worktree tạm sau đó.
+
+Không chạy skill trên Cursor/OpenCode thật trong change này. Profile Cursor và OpenCode chỉ được phép set field có trong schema tool của session; test không giả lập schema đó.
+
+## Thứ tự làm
+
+1. Commit riêng file plan này trước khi implement, để diff của change không lẫn với diff của plan. Chỉ commit khi user bảo.
+2. Bước 1 → 6 ở trên, rồi `npm test`.
+3. Smoke test Codex ở trên, trước khi merge.
 
 ## Assumptions & contingencies
 
 - "Provider" ở đây là coding-agent host đang đọc skill, không phải provider Jev. Nếu người dùng muốn map model Claude sang model Cursor/Codex, không làm trong change này: job có pin `haiku|sonnet|opus|fable` trên worker runtime khác là `blocked`.
 - `argument-hint` và `disable-model-invocation` giữ trong frontmatter. Codex bỏ qua field lạ (parser chỉ đọc `name`, `description`, `metadata`). Nếu một host từ chối cả file vì field lạ, không xóa field: Claude Code cần chúng. Ghi host đó là không load được và dừng, không tạo bản SKILL.md thứ hai.
 - OpenCode có thể không có tool subagent. Khi tool list không có, `spawn-subagent` và `spawn-sub-session` là `unavailable`. Không đặt tên tool OpenCode ngoài `skill`.
-- Cursor Task không có schema cố định trong repo. Chỉ set field mà schema session đang hiện. Không có field resume thì follow-up là attempt mới, không đoán tên field.
+- Tên field input của tool `skill` trong OpenCode chưa được kiểm chứng trong repo này. Bind chỉ dựa trên tên tool `skill`; handoff dùng field mà schema session mô tả là tên/id skill, không có thì đọc `SKILL.md` của sibling. Không hardcode `id` hay `name`.
+- Cursor Task không có schema cố định trong repo. Chỉ set field mà schema session đang hiện. Không có field resume thì follow-up là attempt mới; không có field background thì chỉ chạy foreground. Không đoán tên field, không đoán đường dẫn file kết quả trên đĩa.
+- Run tạo trước change này không có `host:` hay `runtime`. Coordinator của mọi run đó là Claude Code, nhưng worker có thể là Codex hoặc Orca qua `--cross-runtime`, nên `runtime` từng job được suy từ unit và id đã ghi (bước 3, Resume), không gán chung `claude-code`. Resume chéo host không hỗ trợ: handle của sub-session (`claude --bg`, `codex exec`) chỉ đợi và dừng được từ đúng runtime đó.
+- Worker của Claude Code thường không có tool `Agent`, nên nếu tự probe sẽ bind sai thành `generic`. Vì vậy worker không probe; host đến từ dòng `Host:` trong brief.
+- Host không tôn trọng `disable-model-invocation` lẫn `agents/openai.yaml` có thể tự load `ai-main`. hosts.md Invocation đã nói cách xử lý; không tạo bản `ai-main` riêng cho host đó.
 - `spawn_agent` của Codex không dùng. Isolated worker Codex là `codex exec` đã có trong cross-runtime.md.
 - Installer không đổi agent mặc định. Ví dụ README đa host là lệnh user tự chạy, không phải default của `bin/install.mjs`.
