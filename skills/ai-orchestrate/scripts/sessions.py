@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inspect and wait on Claude Code background sessions (sub-sessions).
+"""Inspect and wait on Claude Code background sessions. Only the claude-code worker runtime calls this.
 
   status [id|name...]       compact JSON for the given sessions (all background sessions if none)
   last <id|name>            last assistant text from the session's transcript

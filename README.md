@@ -1,6 +1,6 @@
 # ai-skill
 
-Claude Code skills that take a task from request to verified result: `ai-main` routes it, `ai-orchestrate` runs a job graph across subagents and worktree sub-sessions with an independent arbiter, `ai-auto` locks scope once and runs end to end.
+Skills for Claude Code, Codex, Cursor, OpenCode, and oh-my-pi that take a task from request to verified result: `ai-main` routes it, `ai-orchestrate` runs a job graph across subagents and worktree sub-sessions with an independent arbiter, `ai-auto` locks scope once and runs end to end.
 
 | Skill | Role |
 | --- | --- |
@@ -32,6 +32,12 @@ Then open a new terminal and run `ai auth` to enter your Jev key. That is the on
 # global (~/.claude/skills), available in every project
 npx -y github:0x01001/ai-skill -a claude-code -y -g
 
+# Claude Code, Codex, Cursor, and OpenCode, global
+npx -y github:0x01001/ai-skill -a claude-code -a codex -a cursor -a opencode -y -g
+
+# oh-my-pi (omp), global: npx skills has no omp id; -a pi installs to ~/.agents/skills, which omp reads
+npx -y github:0x01001/ai-skill -a pi -y -g
+
 # current project only (the ai CLI and jg are still installed per user)
 npx -y github:0x01001/ai-skill -a claude-code -y
 
@@ -62,10 +68,23 @@ npm install --prefix "$HOME/.local/share/ai-skill/engine" @dzhng/jevgrep@latest 
 ## Usage
 
 ```text
-/ai-main <task | issue URL | issue list> [--cross-runtime] [--resume <run-dir>] [--yes] [--yagni]
+/ai-main <task | issue URL | issue list> [--cross-runtime] [--resume <run-dir>] [--yes] [--yagni] [--host <id>]
 /ai-orchestrate <task | plan path | issue list> [--cross-runtime] [--resume <run-dir>] [--yes]
-/ai-auto <request | issue URL> [--cross-runtime] [--resume <run-dir>] [--yagni]
+/ai-auto <request | issue URL> [--cross-runtime] [--resume <run-dir>] [--yagni] [--host <id>]
 ```
+
+Invocation per host ([hosts.md](skills/ai-orchestrate/references/hosts.md)); the flags are the same on every host:
+
+| Host | Invocation |
+| --- | --- |
+| `claude-code` | `/ai-main`, `/ai-auto`, `/ai-orchestrate` |
+| `codex` | `$ai-main`, `$ai-auto`, `$ai-orchestrate` |
+| `cursor` | `/ai-main`, `/ai-auto`, `/ai-orchestrate` |
+| `opencode` | `/ai-main`, `/ai-auto`, `/ai-orchestrate` |
+| `omp` (oh-my-pi) | `/skill:ai-main`, `/skill:ai-auto`, `/skill:ai-orchestrate` |
+| `generic` | that host's own command for the skill name |
+
+Codex as host is experimental: background workers depend on codex exec running inside the Codex sandbox. Cursor, OpenCode, and oh-my-pi workers depend on the tools that host exposes; without them those hosts run direct and inline only.
 
 `ai-main` is invoked only by the user (`disable-model-invocation: true`); the other two can also be routed to by `ai-main` or picked by the model.
 
@@ -75,6 +94,7 @@ npm install --prefix "$HOME/.local/share/ai-skill/engine" @dzhng/jevgrep@latest 
 | `--resume <run-dir>` | Continue a previous run from its `run.md` / `brief.md`. |
 | `--yes` | Approve only the effects the contract already describes. Never replaces confirming new external effects. |
 | `--yagni` | In ai-auto, cut everything the stated outcome does not need and list what was cut. |
+| `--host <id>` | Force the host profile (claude-code, codex, cursor, opencode, omp, generic) instead of probing; stops if that host's required tool is missing. |
 
 Examples:
 
@@ -141,9 +161,9 @@ Tests (no network, no real key, store or PATH): `cd cli && PYTHONPATH=src python
 
 ## Requirements
 
-- [Claude Code](https://docs.claude.com/en/docs/claude-code) with background sessions (`claude --bg`, `claude agents`); commands verified on 2.1.318–2.1.322.
+- One host from [hosts.md](skills/ai-orchestrate/references/hosts.md): Claude Code, Codex, Cursor, OpenCode, oh-my-pi, or any other Agent Skills host (generic profile). `claude --bg` and `python3` are required only when the worker runtime is `claude-code` ([Claude Code](https://docs.claude.com/en/docs/claude-code) background sessions, `claude agents`; commands verified on 2.1.318–2.1.322).
 - `git` (worktrees) and, for issues/PRs/labels, [`gh`](https://cli.github.com/) authenticated.
-- `python3` for [`scripts/sessions.py`](skills/ai-orchestrate/scripts/sessions.py) (`status`, `last`, `usage`, `wait` on sub-sessions).
+- `python3` for [`scripts/sessions.py`](skills/ai-orchestrate/scripts/sessions.py) (`status`, `last`, `usage`, `wait` on sub-sessions), claude-code worker runtime only.
 - Optional: Codex or Orca CLI for `--cross-runtime`.
 - Optional, for Jev discovery: Python >= 3.9 and Node >= 22. The installer adds `pipx` (if missing), the `ai` CLI and its own copy of `@dzhng/jevgrep` (any version) outside PATH.
 
@@ -151,13 +171,16 @@ Tests (no network, no real key, store or PATH): `cd cli && PYTHONPATH=src python
 
 ```text
 skills/
-├── ai-main/SKILL.md
+├── ai-main/
+│   ├── SKILL.md
+│   └── agents/openai.yaml  Codex: no implicit invocation
 ├── ai-auto/SKILL.md
 └── ai-orchestrate/
     ├── SKILL.md
     ├── .gitignore
     ├── scripts/sessions.py
     └── references/
+        ├── hosts.md          host profiles: bind, operations per host
         ├── models.md         tier → model, effort, ceiling
         ├── sub-sessions.md   launch, watch, talk, clean up
         ├── worker-brief.md   template for every worker brief
@@ -170,6 +193,7 @@ cli/                          optional `ai` CLI + `jg` shim (Python, pipx)
 └── tests/
 bin/install.mjs, lib.mjs      one-command installer (skills, upstream jevgrep, ai CLI, jg)
 test/install.test.mjs         installer tests (npm test)
+test/skills-host.test.mjs     static checks on skills and host profiles (npm test)
 ```
 
 ## License

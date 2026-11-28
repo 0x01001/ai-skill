@@ -17,7 +17,7 @@
     "!cli/src/*.egg-info"
   ],
   "scripts": {
-    "test": "node --test test/install.test.mjs"
+    "test": "node --test test/install.test.mjs test/skills-host.test.mjs"
   },
   "engines": {
     "node": ">=18"

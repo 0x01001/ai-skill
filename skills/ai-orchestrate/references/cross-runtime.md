@@ -1,6 +1,7 @@
 # Cross-runtime workers (opt-in only)
 
-Enter only with `--cross-runtime` or when the request names a runtime ("as Codex sessions", "Orca workers"). Probe each candidate live before routing to it; a failed probe makes the job `blocked` with the probe output as evidence, never a silent reroute.
+- Orca, and Codex CLI when the host is not `codex`: enter only with `--cross-runtime` or when the request names a runtime ("as Codex sessions", "Orca workers"). Probe each candidate live before routing to it; a failed probe makes the job `blocked` with the probe output as evidence, never a silent reroute.
+- Host `codex` ([hosts.md](hosts.md)): the Codex CLI command block below is that host's `spawn-sub-session`; `--cross-runtime` is not required.
 
 ## Resolve the model
 
@@ -14,7 +15,7 @@ Model ids and flags never carry across runtimes, and the aliases in [models.md](
 ## Codex CLI
 
 - Probe: `codex --version` and `codex login status`; the configured default model and effort are `model` and `model_reasoning_effort` in `~/.codex/config.toml`. Codex starts a run with any `model_reasoning_effort` value, unknown ones included, so pick one of `minimal`, `low`, `medium`, `high`, `xhigh`. An unknown model fails only at the first request, so a model the contract pins gets a one-line probe first (`codex exec -s read-only -m "<model>" "Reply ok." < /dev/null`); a non-zero exit makes the job `blocked` with that output.
-- Run in a worktree you created, in the background. A read-only job runs in the repo root with `-s read-only` and no `--add-dir`; that sandbox blocks every write, so its brief's Report section drops the `report.md` line and keeps "end with this as your final message", and the `last.md` that `-o` saves is the job's report:
+- Run in a worktree you created, in the background. A read-only job, the arbiter included, runs in its detached worktree at the commit it reads ([sub-sessions.md](sub-sessions.md) Launch step 1; `-C` on that worktree, never the repo root) with `-s read-only` and no `--add-dir`; that sandbox blocks every write, so its brief's Report section drops the `report.md` line and keeps "end with this as your final message", and the `last.md` that `-o` saves is the job's report:
 
   ```bash
   codex exec -C "<worktree>" --add-dir "<run-dir>" -s workspace-write \
@@ -23,7 +24,7 @@ Model ids and flags never carry across runtimes, and the aliases in [models.md](
     "Read <run-dir>/jobs/<job-id>/brief.md and carry it out; it is your whole task."
   ```
 
-- Follow-up: `codex exec resume <session-id> "<follow-up>"`.
+- Follow-up: `codex exec resume -o "<run-dir>/jobs/<job-id>/last-r<n>.md" <session-id> "<follow-up>"`, `<n>` the resume count for that job. For a read-only job that file, recorded in `run.md`, replaces `last.md` as its report.
 - For a second-opinion diagnosis or review rather than a job, the `codex:rescue` agent is the lighter route.
 
 ## Orca workers

@@ -1,5 +1,5 @@
 // Installer tests: every external command goes to a fake `run`, so nothing is installed for real.
-// Run: npm test   (node --test test/install.test.mjs)
+// Run: npm test   (node --test test/install.test.mjs test/skills-host.test.mjs)
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";

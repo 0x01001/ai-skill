@@ -40,7 +40,7 @@ Installs, in one go:
 Then run \`ai auth\` in a new terminal and enter your Jev key. Without a key Jev stays off.
 
 Every option except the ones below is passed to both \`npx skills add\` runs
-(e.g. -g, -y, -a claude-code, --copy). The CLI and jg are installed per user either way.
+(e.g. -g, -y, -a claude-code, -a codex, -a cursor, -a opencode, -a pi, --copy). The CLI and jg are installed per user either way.
 
   --no-jev       Skip everything Jev: the jevgrep skill, the ai CLI and jg
   -h, --help     Show this help
